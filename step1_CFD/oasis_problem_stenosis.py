@@ -645,12 +645,25 @@ def make_poiseuille_xaxis_bcs(mesh, ds_inlet, Q_inflow, **NS_namespace):
 
     # Parabolic profile in +x. Ramp: Q(t) = 2*t/1000 + 0.01 [mL/s], t in ms.
     # With normal along -x: r^2 = (y-cy)^2 + (z-cz)^2 (x-offset projects out).
-    kernel = ("(2.0 * (5*(t/1000)+0.01) / area)"
+    kernel = ("(2.0 * (2*(t/1000)+0.01) / area)"
               " * (1.0 - ((x[1]-cy)*(x[1]-cy) + (x[2]-cz)*(x[2]-cz)) / (R*R))")
 
     uinx_expression = Expression(kernel, t=0., area=area, cy=cy, cz=cz, R=R, degree=2)
 
     return [uinx_expression, Constant(0.0), Constant(0.0)]
+
+
+def gaussian_inlet_noise(tstep, sigma=0.01, noise_y=True, noise_z=True):
+    """
+    Returns (eps_y, eps_z) transverse inlet noise [mm/ms == m/s].
+    Each component ~ N(0, sigma^2); set noise_y/noise_z=False to suppress a direction.
+    Seeded with tstep so all MPI ranks draw identical values without broadcast.
+    Both draws always occur so eps_z is always the second draw regardless of noise_y.
+    """
+    rng = np.random.default_rng(seed=tstep)
+    eps_y = rng.normal(0.0, sigma)
+    eps_z = rng.normal(0.0, sigma)
+    return (eps_y if noise_y else 0.0), (eps_z if noise_z else 0.0)
 
 
 # Create Boundary conditions
@@ -836,10 +849,13 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
         for inlet in NS_expressions["inlet"]:
             for uc in inlet: uc.set_t(t)
 
-    elif NS_parameters['inlet_BC_type'] == 'ramp': # Added by Rojin A.
+    elif NS_parameters['inlet_BC_type'] == 'ramp':
+        # Adding noise to the lateral velocity components (y and z)
+        eps_y, eps_z = gaussian_inlet_noise(tstep, sigma=0.01)
         for inlet in NS_expressions["inlet"]:
-            #for uc in inlet: uc.t = t
-            inlet[0].t = t  # only expr_x carries the time parameter; inlet[1], inlet[2] are Constant(0)
+            inlet[0].t = t
+            inlet[1].assign(eps_y)
+            inlet[2].assign(eps_z)
 
     timestep_cpu_time = time.time() - current_time
     current_time = time.time()
@@ -866,7 +882,7 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
         Re_ins[id]      = (0.5*umax_ins[id]) * (2 * R_in) / NS_parameters["nu"]
     Q_ins_sum = sum(Q_ins.values())
     if mpi_rank == 0:
-        print(f'Q_ins (mL/s): {Q_ins_sum:.4f}, umax_in (mm/ms): {umax_ins[2]:.4f}, Reynolds_in: {Re_ins[2]:.1f} \n')
+        print(f'Q_ins (mL/s): {Q_ins_sum:.4f}, umax_in (m/s): {umax_ins[2]:.4f}, Reynolds_in: {Re_ins[2]:.1f} \n')
 
     # Out-Going Flux
     flux_out = {}
