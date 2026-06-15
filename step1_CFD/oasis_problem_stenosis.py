@@ -17,37 +17,40 @@
 #   - <mpirun -n $NP oasis NSfracStep problem=oasis_problem_PT>.
 #   - Note: This script cannot be ran directly.
 #
-# INPUTS:
-#   - mesh_name            : basename of mesh in ./data (expects .xml.gz and .info)
+# INPUTS (passed via command line to Oasis):
+#   - mesh_name            : basename of mesh in ./data/ (expects .xml.gz and .info)
 #   - period               : waveform period [ms]
-#   - timesteps            : time steps per cycle
-#   - cycles               : number of cycles
-#   - viscosity (nu)       : kinematic viscosity [mm^2/ms] (≡ m^2/s in consistent units)
-#   - uOrder               : velocity polynomial order for FE
-#   - save_frequency       : save every N steps
-#   - checkpoint           : write restart every N steps
-#   - inlet_BC_type        : type of the inlet boundary condition --> choose from: {'pulsatile', 'ramp', 'custom'} (default is 'pulsatile')
+#   - timesteps            : number of time steps per cycle
+#   - cycles               : number of cycles to simulate
+#   - viscosity_mu_Pas     : dynamic viscosity [Pa·s]     (default: 0.0037)
+#   - density_kgm3         : fluid density [kg/m³]        (default: 1057)
+#   - uOrder               : FE polynomial degree for velocity (default: 1)
+#   - save_frequency       : save output every N steps
+#   - checkpoint           : write restart checkpoint every N steps
+#   - inlet_BC_type        : 'pulsatile' (Womersley) | 'ramp' (Poiseuille + linear ramp) | 'custom'
 #
-# Optional
-#   - restart_folder       : previous results folder to restart from
-#   - zero_pressure_outlets: set True to force 0-pressure at outlets
-#   - include_gravity, flat_profile_at_intlet_bc (typo kept for compatibility)
+# OPTIONAL:
+#   - restart_folder           : path to a previous results folder to restart from
+#   - zero_pressure_outlets    : set True to enforce p=0 at all outlets (default: False)
+#   - save_first_cycle         : set True to also save the spin-up cycle (default: False)
+#   - flat_profile_at_intlet_bc: set True for plug/flat inlet profile (default: False)
 #
 # OUTPUTS:
-#   - Results written under ./results/{case_fullname}.
-#   - Per-step HDF5 + XDMF via BSLSolver.common.h5io.
+#   - Results written under ./results/{case_fullname}/
+#   - Per-step velocity and pressure in HDF5 + XDMF format via BSLSolver.common.h5io
 #
 # NOTES:
-#   - Units in comments follow Oasis code: mm, ms, mL/s (consistent with FEniCS fields).
-#   - Keep behavior compatible with existing postprocessing.
+#   - All internal FEniCS quantities use mm and ms (Oasis convention).
+#   - Flowrates in mL/s = mm³/ms; kinematic viscosity in mm²/ms = m²/s.
+#   - Geometry is assumed to have x-axis as centerline (inlet normal = [-1, 0, 0]).
 #
 # Adapted from Artery.py originally written by Mehdi Najafi (2018) and Anna Haley (2022). 
 # Copyright (C) 2025 University of Toronto, Biomedical Simulation Lab.
 # -----------------------------------------------------------------------------------------------------------------------
 
-__authors__   = "Mehdi Najafi <mnuoft@gmail.com>. Anna Haley <ahaley@mie.utoronto.ca>. Rojin Anbarafshan <rojin.anbar@gmail.com>"
-__date__      = "2018-2025"
-__copyright__ = "Copyright (C) 2018-2025 UofT"
+__authors__   = "Rojin Anbarafshan <rojin.anbar@gmail.com>"
+__date__      = "2018-2026"
+__copyright__ = "Copyright (C) 2018-2026 UofT"
 __license__   = "Private"
 
 # ---------------------------------------- Imports and Basic Setup -----------------------------------------------------
@@ -585,9 +588,6 @@ def make_poiseuille_bcs(mesh, ds_inlet, Q_inflow, **NS_namespace):
         print (f"Inlet properties: \n"
             f"R [mm]        =   {R:.4f} \n"
             f"Area [mm2]    =   {area:.4f} \n"
-            f"Q [mL/s]      =   {Q_inflow:.4f} \n"
-            f"umax [m/s]    =   {u_max:.4f} \n"
-            f"Reynolds      =   {Reynolds:.1f} \n"
             f"centroid [mm] =   [{center[0]:.4f}, {center[1]:.4f}, {center[2]:.4f}] \n"
             f"normal        =   [{normal[0]:.4f}, {normal[1]:.4f}, {normal[2]:.4f}] \n"
             )
@@ -645,12 +645,12 @@ def make_poiseuille_xaxis_bcs(mesh, ds_inlet, Q_inflow, **NS_namespace):
 
     # Parabolic profile in +x. Ramp: Q(t) = 2*t/1000 + 0.01 [mL/s], t in ms.
     # With normal along -x: r^2 = (y-cy)^2 + (z-cz)^2 (x-offset projects out).
-    kernel = ("(2.0*(2*(t/1000)+0.01)/area)"
+    kernel = ("(2.0 * (5*(t/1000)+0.01) / area)"
               " * (1.0 - ((x[1]-cy)*(x[1]-cy) + (x[2]-cz)*(x[2]-cz)) / (R*R))")
 
-    expr_x = Expression(kernel, t=0., area=area, cy=cy, cz=cz, R=R, degree=2)
+    uinx_expression = Expression(kernel, t=0., area=area, cy=cy, cz=cz, R=R, degree=2)
 
-    return [expr_x, Constant(0.0), Constant(0.0)]
+    return [uinx_expression, Constant(0.0), Constant(0.0)]
 
 
 # Create Boundary conditions
@@ -854,15 +854,19 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
     Q_ins = {}
     pressure_in = {}
     umax_ins = {}
+    Re_ins = {}
     for id in id_in:
         #inout_area[id] = abs( assemble(1.0*ds(id, domain=mesh, subdomain_data=fd)) )
         pressure_in[id] = -assemble(p_*dS[id]) / inout_area[id]
         flux_in[id]     = assemble(dot(u_, normals)*dS[id])
         Q_ins[id]       = abs(flux_in[id])
-        umax_ins[id]    = 2*Q_ins[id]/inout_area[id]
+        umax_ins[id]    = 2*Q_ins[id]/inout_area[id]               # m/s
+        R_in            = np.sqrt(inout_area[id] / np.pi)          # mm
+        U_avg           = Q_ins[id] / inout_area[id]               # mm/ms
+        Re_ins[id]      = (0.5*umax_ins[id]) * (2 * R_in) / NS_parameters["nu"]
     Q_ins_sum = sum(Q_ins.values())
     if mpi_rank == 0:
-        print(f'Q_ins (mL/s): {Q_ins_sum:.4f}, umax_in (m/s): {umax_ins[2]:.4f} \n')
+        print(f'Q_ins (mL/s): {Q_ins_sum:.4f}, umax_in (mm/ms): {umax_ins[2]:.4f}, Reynolds_in: {Re_ins[2]:.1f} \n')
 
     # Out-Going Flux
     flux_out = {}
