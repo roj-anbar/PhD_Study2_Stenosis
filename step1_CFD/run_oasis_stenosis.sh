@@ -7,12 +7,12 @@
 # __date__   = 2025-09
 #
 # PURPOSE:
-#   - Define all case parameters for CFD in one place and submit oasis_solver_PT.sh via sbatch.
+#   - Define all case parameters for CFD in one place and submit oasis_solver.sh via sbatch.
 #   - Optional flags let you override key settings without editing the file.
 #
 # REQUIREMENTS:
-#   - oasis_solver_PT.sh (the job script this wrapper submits)
-#   - oasis_problem_PT.py (required in oasis_solver_PT.sh)
+#   - oasis_solver.sh (the job script this wrapper submits)
+#   - oasis_problem.py (required in oasis_solver.sh)
 #
 # EXECUTION:
 #   - Run this script from terminal by:
@@ -20,8 +20,8 @@
 #
 # IMPORATNT NOTES:
 #   - This script should be ran from the PT case-specific directory containing the mesh data (under /data folder).
-#   - "PATH_OASIS_SOLVER" which is the path to "oasis_solver_PT.sh" should be modified for each user.
-#   - No need to copy oasis_solver_PT.sh and oasis_problem_PT.py for each case (just have these 2 scripts in one directory and call it using "PATH_OASIS_SOLVER" variable).
+#   - "PATH_OASIS_SOLVER" which is the path to "oasis_solver.sh" should be modified for each user.
+#   - No need to copy oasis_solver.sh and oasis_problem.py for each case (just have these 2 scripts in one directory and call it using "PATH_OASIS_SOLVER" variable).
 #
 # Adapted from solver-v2.sh written by 2022 Anna Haley (ahaley@mie.utoronto.ca) and solver.sh written by 2018 Mehdi Najafi (mnuoft@gmail.com). 
 # Copyright (C) 2025 University of Toronto, Biomedical Simulation Lab.
@@ -31,12 +31,12 @@ set -euo pipefail
 
 
 # Define path to your CFD Oasis solver (change accordingly)
-PATH_OASIS_SOLVER="/scratch/ranbar/My_Projects/Study2_srenosis/scripts/step1_CFD/oasis_solver_PT.sh"
+PATH_OASIS_SOLVER="/scratch/ranbar/My_Projects/Study2_srenosis/scripts/step1_CFD/oasis_solver_stenosis.sh"
 
 
 # Safety check for if file exists
 if [[ ! -f "$PATH_OASIS_SOLVER" ]]; then
-    echo "ERROR: Oasis slurm job script 'oasis_solver_PT.sh' not found:"
+    echo "ERROR: Oasis slurm job script 'oasis_solver_stenosis.sh' not found:"
     echo "       $OASIS_SLURM"
     exit 1
 fi
@@ -94,7 +94,7 @@ mkdir -p ./logs ./hpclog
 
 #------------------------------------------- Submit the job ----------------------------------------------------
 # All config is exported via environment (sbatch --export=ALL).
-# oasis_solver_PT.sh should read these variables (e.g., $cycles, $save_frequency, …).
+# oasis_solver.sh should read these variables (e.g., $cycles, $save_frequency, …).
 
 # Submit the job with defined parameters
 sbatch --export=ALL \

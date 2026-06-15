@@ -1,6 +1,6 @@
 #!/bin/bash
 #-----------------------------------------------------------------------------------------------------------------------
-# oasis_solver_PT.sh
+# oasis_solver_stenosis.sh
 # SLURM job wrapper to run the Oasis CFD solver inside an Apptainer container.
 #
 # __author__ = Rojin Anbarafshan <rojin.anbar@gmail.com>
@@ -141,7 +141,7 @@ echo "--------------------------------------------------------------------------
 apptainer exec \
   --env HYDRA_LAUNCHER=fork \
   $BIND_OPTS ~/containers/fenics-legacy/fenics-oasis.sif \
-  mpirun -n $NP oasis NSfracStep problem=oasis_problem_PT \
+  mpirun -n $NP oasis NSfracStep problem=oasis_problem_stenosis \
   mesh_name=$casename \
   cycles=$cycles \
   period=$period \
