@@ -1,9 +1,9 @@
 # -----------------------------------------------------------------------------------------------------------------------
-# oasis_problem_PT.py 
+# oasis_problem_stenosis.py 
 # This is the problem definition for Oasis/NSfracStep.py (patient-specific arteries/veins).
 #
 # __author__: Rojin Anbarafshan <rojin.anbar@gmail.com>
-# __date__:   2025-09
+# __date__:   2026-06
 #
 # PURPOSE:
 #   - To provide case specific problem parameters (e.g., mesh loading, boundary conditions, time hooks) for Oasis NSfracStep solver (legacy FEniCS).
@@ -27,7 +27,7 @@
 #   - uOrder               : FE polynomial degree for velocity (default: 1)
 #   - save_frequency       : save output every N steps
 #   - checkpoint           : write restart checkpoint every N steps
-#   - inlet_BC_type        : 'pulsatile' (Womersley) | 'ramp' (Poiseuille + linear ramp) | 'custom'
+#   - inlet_BC_type        : type of the inlet boundary condition --> choose from: {'pulsatile', 'ramp', 'custom'} (default is 'pulsatile')
 #
 # OPTIONAL:
 #   - restart_folder           : path to a previous results folder to restart from
@@ -111,7 +111,6 @@ def tuple2str(t, fmt='%12.10f'):
 def info_gray(s, check=True):
     if mpi_rank == 0 and check:
         print ("\033[1;37;30m%s\033[0m"%s)
-
 
 
 def step_str(i, l=10):
@@ -408,7 +407,6 @@ def problem_parameters(commandline_kwargs, NS_parameters, **NS_namespace):
     h5stdio.init(NS_parameters['results_folder'], case_fullname+'_curcyc_%%d_t=%%0%d.4f_ts=%%0%dd_up.h5'%(f+4,g))
 
 
-
 # --------------------------------------- Mesh ----------------------------------------------------------
 def mesh(mesh_path, **NS_namespace):
     """Oasis function to create the mesh."""
@@ -506,7 +504,6 @@ def post_import_problem(NS_parameters, mesh, commandline_kwargs, NS_expressions,
     return d
 
 
-
 # --------------------------------------- Boundary Conditions --------------------------------------------
 
 """
@@ -537,7 +534,7 @@ def flow_waveform(Qmean, cycles, period, time_steps, FC):
 """
 
 
-def make_poiseuille_bcs(mesh, ds_inlet, Q_inflow, **NS_namespace):
+def poiseuille_inlet_velocity(mesh, ds_inlet, Q_inflow, **NS_namespace):
     """
     Build Poiseuille expressions aligned with the inlet's average normal.
     Q_inflow in mL/s (consistent legacy units).
@@ -567,24 +564,16 @@ def make_poiseuille_bcs(mesh, ds_inlet, Q_inflow, **NS_namespace):
     # Normalize average normals -> normal: unit vector representing the average outward normal of the inlet patch
     normal = n_avg/n_len
 
-
     ### 2. Compute other parameters
     n0, n1, n2 = normal[0], normal[1], normal[2]
     c0, c1, c2 = center[0], center[1], center[2] #[mm]
     R = np.sqrt(area/np.pi) #[mm]
 
-    # umax calculated based on input flowrate
-    u_max  = 2.0 * Q_inflow / area        #[m/s] == [mm/ms] == [ml/s / mm^2]
-    Reynolds = u_max*2*R/NS_parameters["nu"]
-    
 
     dt = NS_parameters['dt']
-    max_dt = 0.5*mesh.hmin()/u_max  # based on CFL = 0.5
 
     if mpi_rank == 0:
         print(f"Starting simulations for dt = {dt} [ms]")
-        print(f"Suggested timestep [ms] = {max_dt:0.6f}\n")
-
         print (f"Inlet properties: \n"
             f"R [mm]        =   {R:.4f} \n"
             f"Area [mm2]    =   {area:.4f} \n"
@@ -616,7 +605,7 @@ def make_poiseuille_bcs(mesh, ds_inlet, Q_inflow, **NS_namespace):
 
 
 
-def make_poiseuille_xaxis_bcs(mesh, ds_inlet, Q_inflow, **NS_namespace):
+def poiseuille_inlet_velocity_xaxis(mesh, ds_inlet, Q_inflow, **NS_namespace):
     """
     Poiseuille inlet BCs for an idealized stenosis geometry with x-axis centerline.
     Assumes inlet face outward normal = (-1, 0, 0); flow enters in +x direction.
@@ -629,14 +618,9 @@ def make_poiseuille_xaxis_bcs(mesh, ds_inlet, Q_inflow, **NS_namespace):
     cz   = assemble(x[2] * ds_inlet) / area     # mm, z-centroid of inlet face
     R    = np.sqrt(area / np.pi)                # mm, equivalent radius
 
-    u_max = 2.0 * Q_inflow / area              # mm/ms == m/s
-    Re    = u_max * 2 * R / NS_parameters["nu"]
-
     if mpi_rank == 0:
-        dt     = NS_parameters['dt']
-        max_dt = 0.5 * mesh.hmin() / u_max
-        print(f"Starting simulations for dt = {dt} [ms]")
-        print(f"Suggested timestep [ms] = {max_dt:.6f}\n")
+        dt  = NS_parameters['dt']
+        print(f"Starting simulations for dt (ms) = {dt}")
         print(f"Inlet properties:\n"
               f"  R [mm]        = {R:.4f}\n"
               f"  Area [mm^2]   = {area:.4f}\n"
@@ -721,8 +705,8 @@ def create_bcs(u_, p_, p_1, t, NS_expressions, V, Q, area_ratio, mesh, subdomain
                 #print('Inlet tag = ', inlet_tag) 
                 #print('ds_inlet  = ', ds_inlet)  # for debugging
 
-            #inlet_i = make_poiseuille_bcs(mesh, ds_inlet, Q_inflow)
-            inlet_i = make_poiseuille_xaxis_bcs(mesh, ds_inlet, Q_inflow)
+            #inlet_i = poiseuille_inlet_velocity(mesh, ds_inlet, Q_inflow)
+            inlet_i = poiseuille_inlet_velocity_xaxis(mesh, ds_inlet, Q_inflow)
 
 
         else: #THIS DOES NOT CURRENTLY WORK #NS_parameters['inlet_BC_type'] == 'custom'
@@ -831,18 +815,18 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
                   total_cycles, area_ratio, t, dS, timestep_cpu_time, current_time, 
                   cpu_time, final_time, timesteps, not_zero_pressure_outlets, **NS_namespace):
 
-    # update the current cycles
+    # Update the current cycles
     current_cycle = int(tstep / timesteps)
-    if mpi_rank == 0:
-        # Calculate CFL
-        max_u = max(u_[0].vector().get_local().max(), u_[1].vector().get_local().max())
-        CFL = NS_parameters['dt']*max_u/mesh.hmin()
-        print (f'For cycle= {current_cycle},   tstep= {tstep},  current time (ms)= {t:.4f}')
-        print (f"worst CFL number is: {CFL:.4f}") 
+
+    # Calculate worst-case CFL across all velocity components and all MPI ranks
+    # USe norm('linf') to get absolute value so negative/reverse-flow velocities are captured too
+    max_u = max(u_[i].vector().norm('linf') for i in range(mesh.geometry().dim()))
+    CFL = NS_parameters['dt'] * max_u / mesh.hmin()
+    if mpi_rank == 0 and tstep % 10 == 0:
+        print(f"cycle={current_cycle}  tstep={tstep}  t(ms)={t:.2f}:        CFL={CFL:.4f}")
 
 
-
-    fd = subdomain_data
+    # fd = subdomain_data  # used in commented-out area assembly lines below
 
     # Update boundary condition
     if NS_parameters['inlet_BC_type'] == 'pulsatile': # Added by Rojin A.
@@ -864,87 +848,90 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
     # Do not proceed if the time step is less than 3
     if tstep < 3: return
 
-    Q_ideals = {}
     # In-Going Flux & pressure
     flux_in = {}
     Q_ins = {}
     pressure_in = {}
     umax_ins = {}
     Re_ins = {}
-    for id in id_in:
-        #inout_area[id] = abs( assemble(1.0*ds(id, domain=mesh, subdomain_data=fd)) )
-        pressure_in[id] = -assemble(p_*dS[id]) / inout_area[id]
-        flux_in[id]     = assemble(dot(u_, normals)*dS[id])
-        Q_ins[id]       = abs(flux_in[id])
-        umax_ins[id]    = 2*Q_ins[id]/inout_area[id]               # m/s
-        R_in            = np.sqrt(inout_area[id] / np.pi)          # mm
-        U_avg           = Q_ins[id] / inout_area[id]               # mm/ms
-        Re_ins[id]      = (0.5*umax_ins[id]) * (2 * R_in) / NS_parameters["nu"]
+    for inlet_id in id_in:
+        #inout_area[inlet_id] = abs( assemble(1.0*ds(inlet_id, domain=mesh, subdomain_data=fd)) )
+        pressure_in[inlet_id] = -assemble(p_*dS[inlet_id]) / inout_area[inlet_id]
+        flux_in[inlet_id]     = assemble(dot(u_, normals)*dS[inlet_id])
+        Q_ins[inlet_id]       = abs(flux_in[inlet_id])
+        umax_ins[inlet_id]    = 2*Q_ins[inlet_id]/inout_area[inlet_id]      # m/s
+        R_in                  = np.sqrt(inout_area[inlet_id] / np.pi)       # inlet radius (mm)
+        Re_ins[inlet_id]      = (0.5*umax_ins[inlet_id]) * (2*R_in) / NS_parameters["nu"]
     Q_ins_sum = sum(Q_ins.values())
     if mpi_rank == 0:
         print(f'Q_ins (mL/s): {Q_ins_sum:.4f}, umax_in (m/s): {umax_ins[2]:.4f}, Reynolds_in: {Re_ins[2]:.1f} \n')
 
     # Out-Going Flux
     flux_out = {}
-    Q_outs =  {}
+    Q_outs = {}
     pressure_out = {}
-    for id in id_out:
-        #inout_area[id] = abs( assemble(1.0*ds(id, domain=mesh, subdomain_data=fd)) )
-        pressure_out[id] = assemble(p_*dS[id]) / inout_area[id]
-        flux_out[id] = assemble(dot(u_, normals)*dS[id])
-        Q_outs[id] = abs(flux_out[id])
+    for out_id in id_out:
+        #inout_area[out_id] = abs( assemble(1.0*ds(out_id, domain=mesh, subdomain_data=fd)) )
+        pressure_out[out_id] = assemble(p_*dS[out_id]) / inout_area[out_id]
+        flux_out[out_id]     = assemble(dot(u_, normals)*dS[out_id])
+        Q_outs[out_id]       = abs(flux_out[out_id])
     Q_outs_sum = sum(Q_outs.values())
 
-    # Compute flux and update pressure condition
+    # Compute flux and update outlet pressure BCs using dual-pressure method
+    # (Gin & Steinman, "A Dual-Pressure Boundary Condition for use in Simulations of Bifurcating Conduits")
     if not_zero_pressure_outlets:
-      for i, out_id in enumerate(id_out):
-        Q_ideals[i] = area_ratio[i]*Q_ins_sum
-        p_old = NS_expressions[out_id].p
+        Q_ideals = {}
+        for i, out_id in enumerate(id_out):
+            Q_ideals[i] = area_ratio[i] * Q_ins_sum
+            p_old    = NS_expressions[out_id].p
+            R_optimal = area_ratio[i]                       # target flow fraction
+            R_actual  = Q_outs[out_id] / Q_ins_sum         # achieved flow fraction
+            M_err = abs(R_optimal / R_actual)
+            R_err = abs(R_optimal - R_actual)
 
-        # Gin and Steinman et al., A Dual-Pressure Boundary Condition
-        # for use in Simulations of Bifurcating Conduits
-        R_optimal = area_ratio[i]
-        R_actual = Q_outs[out_id] / Q_ins_sum
-
-        M_err = abs(R_optimal / R_actual)
-        R_err = abs(R_optimal - R_actual)
-
-        if p_old < 0:
-            E = 1 + R_err / R_optimal
-        else:
-            E = -1 * ( 1 + R_err / R_optimal )
-
-        # 1) Linear update to converge first 100 tsteps of the first cycle
-        delta = (R_optimal - R_actual) / R_optimal
-        if tstep < 100:
-            h = 0.1
-            if p_old > 1 and delta < 0:
-                NS_expressions[out_id].p  = p_old
+            # sign of E controls whether pressure is increased or decreased
+            if p_old < 0:
+                E = 1 + R_err / R_optimal
             else:
-                NS_expressions[out_id].p  = p_old * ( 1 - delta*h)
+                E = -1 * (1 + R_err / R_optimal)
 
-        # 2) Dual pressure BC
-        else:
-            if p_old > 2 and delta < 0:
-                NS_expressions[out_id].p  = p_old
+            delta = (R_optimal - R_actual) / R_optimal
+
+            # 1) Linear update for the first 100 tsteps to aid initial convergence
+            if tstep < 100:
+                h = 0.1
+                if p_old > 1 and delta < 0:
+                    NS_expressions[out_id].p = p_old
+                else:
+                    NS_expressions[out_id].p = p_old * (1 - delta * h)
+
+            # 2) Full dual-pressure BC once flow is initialised
             else:
-                NS_expressions[out_id].p  = p_old * beta(R_err,p_old) * M_err ** E
+                if p_old > 2 and delta < 0:
+                    NS_expressions[out_id].p = p_old
+                else:
+                    NS_expressions[out_id].p = p_old * beta(R_err, p_old) * M_err ** E
         
 
     #Print the flow rates, fluxes, pressure
     if mpi_rank == 0:
 
         if NS_parameters['inlet_BC_type'] == 'pulsatile':
-            # #Flux In/Out Flux, Velocity, Pressure
-            print ("~"*88)
-            print ("Flow Rate or Flux Error is: ", 100.*(abs(sum(flux_in.values()))-abs(sum(flux_out.values())))/abs(sum(flux_in.values())),"%")
-            print ("~"*88)
-            print ("%3s  %2s          %-15s  %-18s  %-18s  %-18s  %-18s"%('I/O','id','Flux', 'Ideal_Flux', 'Velocity', 'Pressure', 'New Pressure'))
-            for id in id_in: ######BUGGG FOUND BY ROJIN A.: why we're printing flux_in two times?? #####
-                print ("%-3s  %2d  % 16.15f  % 16.15f  % 16.15f  % 16.15f"%('In', id, flux_in[id], flux_in[id], flux_in[id]/inout_area[id], pressure_in[id]))
-            for i, id in enumerate(id_out):
-                print ("%-3s  %2d  % 16.15f  % 16.15f  % 16.15f  % 16.15f  % 16.15f"%('Out', id, flux_out[id], area_ratio[i]*Q_ins_sum, flux_out[id]/inout_area[id], pressure_out[id], NS_expressions[id].p))
-            print ("~"*88)
+            flux_err = 100. * (abs(sum(flux_in.values())) - abs(sum(flux_out.values()))) / abs(sum(flux_in.values()))
+            print("~" * 88)
+            print(f"Flow Rate / Flux Error: {flux_err:.4f} %")
+            print("~" * 88)
+            # Inlet: Ideal_Flux == Flux (inlet is imposed; no ideal vs actual distinction)
+            print("%3s  %2s  %-16s  %-16s  %-16s  %-16s" % ('I/O', 'id', 'Flux', 'Velocity', 'Pressure', 'New Pressure'))
+            for inlet_id in id_in:
+                print("%-3s  %2d  % 16.15f  % 16.15f  % 16.15f" % (
+                    'In', inlet_id, flux_in[inlet_id],
+                    flux_in[inlet_id] / inout_area[inlet_id], pressure_in[inlet_id]))
+            for i, out_id in enumerate(id_out):
+                print("%-3s  %2d  % 16.15f  % 16.15f  % 16.15f  % 16.15f  % 16.15f" % (
+                    'Out', out_id, flux_out[out_id], area_ratio[i] * Q_ins_sum,
+                    flux_out[out_id] / inout_area[out_id], pressure_out[out_id], NS_expressions[out_id].p))
+            print("~" * 88)
 
 
         sys.stdout.flush()
@@ -952,23 +939,13 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
         elapsed_wall_time = _global_timer.elapsed()[0] - initial_wall_time
 
 
-    # ---------------------------------- Saving ----------------------------------------        
-    
-    # Save velocity and pressure for all cycles
-    if save_first_cycle:
-        if tstep % save_freq == 0:
-            h5stdio.Save( current_cycle, t, tstep, Q_ins, Q_outs, NS_parameters, 'Step-%06d'%tstep, q_) #multiple nodes?
-            if mpi_rank == 0:
-                h5stdio.SaveXDMF( os.path.join(NS_parameters['results_folder'], NS_parameters['case_fullname']+'.xdmf') )
-            
-
-    # Save velocity and pressure (only if it's not the first cycle)
-    else:
-        if (current_cycle > 0):
-            if tstep % save_freq == 0:	
-                h5stdio.Save( current_cycle, t, tstep, Q_ins, Q_outs, NS_parameters, 'Step-%06d'%tstep, q_) #multiple nodes?
-                if mpi_rank == 0:
-                    h5stdio.SaveXDMF( os.path.join(NS_parameters['results_folder'], NS_parameters['case_fullname']+'.xdmf') )
+    # ---------------------------------- Saving ----------------------------------------
+    # If save_first_cycle is True it saves every cycle; otherwise skip cycle 0 and saves everything afterwards
+    should_save = save_first_cycle or (current_cycle > 0)
+    if should_save and tstep % save_freq == 0:
+        h5stdio.Save(current_cycle, t, tstep, Q_ins, Q_outs, NS_parameters, 'Step-%06d' % tstep, q_)
+        if mpi_rank == 0:
+            h5stdio.SaveXDMF(os.path.join(NS_parameters['results_folder'], NS_parameters['case_fullname'] + '.xdmf'))
 
 
 def theend_hook(stop, newfolder, results_folder, **NS_namespace):
