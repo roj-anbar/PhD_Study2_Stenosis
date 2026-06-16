@@ -845,7 +845,7 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
     current_time = time.time()
     cpu_time += timestep_cpu_time
 
-    # Do not proceed if the time step is less than 3
+    # Do not proceed for the first 3 timesteps
     if tstep < 3: return
 
     # In-Going Flux & pressure
@@ -859,12 +859,13 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
         pressure_in[inlet_id] = -assemble(p_*dS[inlet_id]) / inout_area[inlet_id]
         flux_in[inlet_id]     = assemble(dot(u_, normals)*dS[inlet_id])
         Q_ins[inlet_id]       = abs(flux_in[inlet_id])
-        umax_ins[inlet_id]    = 2*Q_ins[inlet_id]/inout_area[inlet_id]      # m/s
+        u_mean_in              = Q_ins[inlet_id] / inout_area[inlet_id]      # m/s
+        umax_ins[inlet_id]    = 2*u_mean_in                                 # m/s
         R_in                  = np.sqrt(inout_area[inlet_id] / np.pi)       # inlet radius (mm)
-        Re_ins[inlet_id]      = (0.5*umax_ins[inlet_id]) * (2*R_in) / NS_parameters["nu"]
+        Re_ins[inlet_id]      = u_mean_in * (2*R_in) / NS_parameters["nu"]
     Q_ins_sum = sum(Q_ins.values())
     if mpi_rank == 0:
-        print(f'Q_ins (mL/s): {Q_ins_sum:.4f}, umax_in (m/s): {umax_ins[2]:.4f}, Reynolds_in: {Re_ins[2]:.1f} \n')
+        print(f'Q_ins (mL/s): {Q_ins_sum:.4f}, umax_in (m/s): {umax_ins[id_in[0]]:.4f}, Reynolds_in: {Re_ins[id_in[0]]:.1f} \n')
 
     # Out-Going Flux
     flux_out = {}
