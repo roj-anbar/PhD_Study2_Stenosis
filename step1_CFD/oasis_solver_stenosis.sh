@@ -110,7 +110,7 @@ BIND_OPTS="--bind /scratch:/scratch \
 #---------------------------------- Write to log ---------------------------------------------
 
 echo "--------------------------------------------------------------------------------"
-echo "Pulsatile Tinnitus - CFD Solver Oasis - Biomedical Simulation Lab - University of Toronto — $(date)"
+echo "Idealized Stenosis - CFD Solver Oasis - Biomedical Simulation Lab - University of Toronto — $(date)"
 echo "Case name:                      ${casename}"
 echo "Case name (full):               ${casename_full}"
 echo "Results folder:                 ${results_folder}"

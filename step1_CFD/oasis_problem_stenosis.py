@@ -534,75 +534,12 @@ def flow_waveform(Qmean, cycles, period, time_steps, FC):
 """
 
 
-def poiseuille_inlet_velocity(mesh, ds_inlet, Q_inflow, **NS_namespace):
+def ramp_Q_inflow(t):
     """
-    Build Poiseuille expressions aligned with the inlet's average normal.
-    Q_inflow in mL/s (consistent legacy units).
+    Linear ramp flowrate for the 'ramp' inlet_BC_type.
+    t in ms (simulation time); returns Q_inflow in mL/s (consistent legacy units).
     """
-
-    dim = mesh.geometry().dim()
-
-    x = SpatialCoordinate(mesh) #[mm]
-    area   = assemble(Constant(1.0)*ds_inlet) #[mm^2]
-    center = (assemble(x[0]*ds_inlet)/area, assemble(x[1]*ds_inlet)/area, assemble(x[2]*ds_inlet)/area ) #[mm]
-    
-
-    # ----------------------- Obtain inlet parameters ---------------------- #
-    
-    ### 1. Compute the area-weighted average normal ###
-
-    # Obtain raw normals
-    # n_raw[i]: i-th component (i = 0,1,2) of the unit outward normal vector on each boundary facet
-    n_raw  = FacetNormal(mesh)
-
-    # Average the normals over the inlet
-    n_avg  = np.array([assemble(n_raw[i]*ds_inlet) for i in range(dim)])
-    
-    # Calculate the length of average normal components (~ inlet area) -> used for normalization
-    n_len  = np.sqrt(sum([n_avg[i]**2 for i in range(dim)]))
-
-    # Normalize average normals -> normal: unit vector representing the average outward normal of the inlet patch
-    normal = n_avg/n_len
-
-    ### 2. Compute other parameters
-    n0, n1, n2 = normal[0], normal[1], normal[2]
-    c0, c1, c2 = center[0], center[1], center[2] #[mm]
-    R = np.sqrt(area/np.pi) #[mm]
-
-
-    dt = NS_parameters['dt']
-
-    if mpi_rank == 0:
-        print(f"Starting simulations for dt = {dt} [ms]")
-        print (f"Inlet properties: \n"
-            f"R [mm]        =   {R:.4f} \n"
-            f"Area [mm2]    =   {area:.4f} \n"
-            f"centroid [mm] =   [{center[0]:.4f}, {center[1]:.4f}, {center[2]:.4f}] \n"
-            f"normal        =   [{normal[0]:.4f}, {normal[1]:.4f}, {normal[2]:.4f}] \n"
-            )
-
-
-    # -------------------- Create Expressions for each direction ------------------- #
-    # Obtain inlet poiseuille velocity (one component per axis)
-    uin_expressions = [[],[],[]]
-
-    # The ramp equation for inlet flowrate is embedded in the below Kernel: Q_in = 2*t/1000 + 0.01 -> t is in [ms]
-    kernel = (
-        "-ncomp * (2.0 * (2*(t/1000) + 0.01)/ area) * (1.0 - "
-        "( pow((x[0]-c0) - n0 * ((x[0]-c0)*n0 + (x[1]-c1)*n1 + (x[2]-c2)*n2), 2) + "
-        "  pow((x[1]-c1) - n1 * ((x[0]-c0)*n0 + (x[1]-c1)*n1 + (x[2]-c2)*n2), 2) + "
-        "  pow((x[2]-c2) - n2 * ((x[0]-c0)*n0 + (x[1]-c1)*n1 + (x[2]-c2)*n2), 2) ) "
-        " / (R*R) )"
-    )
-
-    for j in range(dim):      
-        uin_expressions[j] = Expression(kernel, ncomp=normal[j], t=0., area=area,
-                                        c0=c0, c1=c1, c2=c2,
-                                        n0=n0, n1=n1, n2=n2,
-                                        R=R, degree=2)
-
-    return uin_expressions
-
+    return 10 #2 * t / 1000 + 0.01
 
 
 def poiseuille_inlet_velocity_xaxis(mesh, ds_inlet, Q_inflow, **NS_namespace):
@@ -629,10 +566,10 @@ def poiseuille_inlet_velocity_xaxis(mesh, ds_inlet, Q_inflow, **NS_namespace):
 
     # Parabolic profile in +x. Ramp: Q(t) = 2*t/1000 + 0.01 [mL/s], t in ms.
     # With normal along -x: r^2 = (y-cy)^2 + (z-cz)^2 (x-offset projects out).
-    kernel = ("(2.0 * (2*(t/1000)+0.01) / area)"
-              " * (1.0 - ((x[1]-cy)*(x[1]-cy) + (x[2]-cz)*(x[2]-cz)) / (R*R))")
 
-    uinx_expression = Expression(kernel, t=0., area=area, cy=cy, cz=cz, R=R, degree=2)
+    #kernel = ("(2.0 * (2*(t/1000)+0.01) / area) * (1.0 - ((x[1]-cy)*(x[1]-cy) + (x[2]-cz)*(x[2]-cz)) / (R*R))")
+    kernel = ("(2.0 * Q_inflow / area) * (1.0 - ((x[1]-cy)*(x[1]-cy) + (x[2]-cz)*(x[2]-cz)) / (R*R))")
+    uinx_expression = Expression(kernel, Q_inflow=Q_inflow, area=area, cy=cy, cz=cz, R=R, degree=2)
 
     return [uinx_expression, Constant(0.0), Constant(0.0)]
 
@@ -690,20 +627,16 @@ def create_bcs(u_, p_, p_1, t, NS_expressions, V, Q, area_ratio, mesh, subdomain
             if mpi_rank == 0:
                 print ('- loading inflow wave form:', fcs_i_filename)
             inlet_i = Womersley.make_womersley_bcs_2(NS_namespace["period"], Q_means[i], fcs_i_filename, mesh, nu, tmp_a, tmp_c, tmp_r, tmp_n, velocity_degree, flat_profile_at_intlet_bc)
-        
-
-        # Added by Rojin A.
+  
         elif NS_parameters['inlet_BC_type'] == 'ramp':
   
             # Surface integrand over the boundaries
             inlet_tag = id_in[i] #inlet_tag=2
             ds_inlet = dS[inlet_tag]
-            Q_inflow = 2*t/1000 + 0.01 #[ml/s]
+            Q_inflow = ramp_Q_inflow(t) #2*t/1000 + 0.01 #[ml/s]
 
             # for debugging
-            #if mpi_rank == 0:
-                #print('Inlet tag = ', inlet_tag) 
-                #print('ds_inlet  = ', ds_inlet)  # for debugging
+            #if mpi_rank == 0: print('Inlet tag = ', inlet_tag, 'ds_inlet  = ', ds_inlet)
 
             #inlet_i = poiseuille_inlet_velocity(mesh, ds_inlet, Q_inflow)
             inlet_i = poiseuille_inlet_velocity_xaxis(mesh, ds_inlet, Q_inflow)
@@ -733,10 +666,10 @@ def create_bcs(u_, p_, p_1, t, NS_expressions, V, Q, area_ratio, mesh, subdomain
         for inlet in NS_expressions["inlet"]:
             for uc in inlet: uc.set_t(t)
 
-    elif NS_parameters['inlet_BC_type'] == 'ramp': # Added by Rojin A.
-        for inlet in NS_expressions["inlet"]:
-            #for uc in inlet: uc.t = t
-            inlet[0].t = t  # only expr_x carries the time parameter; inlet[1], inlet[2] are Constant(0)
+    # elif NS_parameters['inlet_BC_type'] == 'ramp': # Added by Rojin A.
+    #     for inlet in NS_expressions["inlet"]:
+    #         #for uc in inlet: uc.t = t
+    #         inlet[0].t = t  # only expr_x carries the time parameter; inlet[1], inlet[2] are Constant(0)
 
 
     if mpi_rank == 0: print(firststr)
@@ -823,7 +756,7 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
     max_u = max(u_[i].vector().norm('linf') for i in range(mesh.geometry().dim()))
     CFL = NS_parameters['dt'] * max_u / mesh.hmin()
     if mpi_rank == 0 and tstep % 10 == 0:
-        print(f"cycle={current_cycle}  tstep={tstep}  t(ms)={t:.2f}:        CFL={CFL:.4f}")
+        print(f"For cycle= {current_cycle}  tstep= {tstep}  t(ms)= {t:.2f}:        CFL= {CFL:.4f}")
 
 
     # fd = subdomain_data  # used in commented-out area assembly lines below
@@ -835,9 +768,10 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
 
     elif NS_parameters['inlet_BC_type'] == 'ramp':
         # Adding noise to the lateral velocity components (y and z)
-        eps_y, eps_z = gaussian_inlet_noise(tstep, sigma=0.01)
+        eps_y, eps_z = gaussian_inlet_noise(tstep, sigma=0.01, noise_y=False, noise_z=False)
         for inlet in NS_expressions["inlet"]:
-            inlet[0].t = t
+            #inlet[0].t = t
+            inlet[0].Q_inflow = ramp_Q_inflow(t)
             inlet[1].assign(eps_y)
             inlet[2].assign(eps_z)
 
@@ -849,11 +783,11 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
     if tstep < 3: return
 
     # In-Going Flux & pressure
-    flux_in = {}
-    Q_ins = {}
+    flux_in     = {}
+    Q_ins       = {}
     pressure_in = {}
-    umax_ins = {}
-    Re_ins = {}
+    umax_ins    = {}
+    Re_ins      = {}
     for inlet_id in id_in:
         #inout_area[inlet_id] = abs( assemble(1.0*ds(inlet_id, domain=mesh, subdomain_data=fd)) )
         pressure_in[inlet_id] = -assemble(p_*dS[inlet_id]) / inout_area[inlet_id]
@@ -864,8 +798,8 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
         R_in                  = np.sqrt(inout_area[inlet_id] / np.pi)       # inlet radius (mm)
         Re_ins[inlet_id]      = u_mean_in * (2*R_in) / NS_parameters["nu"]
     Q_ins_sum = sum(Q_ins.values())
-    if mpi_rank == 0:
-        print(f'Q_ins (mL/s): {Q_ins_sum:.4f}, umax_in (m/s): {umax_ins[id_in[0]]:.4f}, Reynolds_in: {Re_ins[id_in[0]]:.1f} \n')
+    if mpi_rank == 0 and tstep % 10 == 0:
+        print(f'Q_in(mL/s)= {Q_ins_sum:.4f}, umax_in(m/s)= {umax_ins[id_in[0]]:.4f}, Reynolds_in= {Re_ins[id_in[0]]:.1f} \n')
 
     # Out-Going Flux
     flux_out = {}
