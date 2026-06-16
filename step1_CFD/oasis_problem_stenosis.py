@@ -877,41 +877,6 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
         Q_outs[out_id]       = abs(flux_out[out_id])
     Q_outs_sum = sum(Q_outs.values())
 
-    # Compute flux and update outlet pressure BCs using dual-pressure method
-    # (Gin & Steinman, "A Dual-Pressure Boundary Condition for use in Simulations of Bifurcating Conduits")
-    if not_zero_pressure_outlets:
-        Q_ideals = {}
-        for i, out_id in enumerate(id_out):
-            Q_ideals[i] = area_ratio[i] * Q_ins_sum
-            p_old    = NS_expressions[out_id].p
-            R_optimal = area_ratio[i]                       # target flow fraction
-            R_actual  = Q_outs[out_id] / Q_ins_sum         # achieved flow fraction
-            M_err = abs(R_optimal / R_actual)
-            R_err = abs(R_optimal - R_actual)
-
-            # sign of E controls whether pressure is increased or decreased
-            if p_old < 0:
-                E = 1 + R_err / R_optimal
-            else:
-                E = -1 * (1 + R_err / R_optimal)
-
-            delta = (R_optimal - R_actual) / R_optimal
-
-            # 1) Linear update for the first 100 tsteps to aid initial convergence
-            if tstep < 100:
-                h = 0.1
-                if p_old > 1 and delta < 0:
-                    NS_expressions[out_id].p = p_old
-                else:
-                    NS_expressions[out_id].p = p_old * (1 - delta * h)
-
-            # 2) Full dual-pressure BC once flow is initialised
-            else:
-                if p_old > 2 and delta < 0:
-                    NS_expressions[out_id].p = p_old
-                else:
-                    NS_expressions[out_id].p = p_old * beta(R_err, p_old) * M_err ** E
-        
 
     #Print the flow rates, fluxes, pressure
     if mpi_rank == 0:
