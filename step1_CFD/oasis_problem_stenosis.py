@@ -248,7 +248,7 @@ def read_mesh_info(mesh_info_path, key):
 
     # print the summary
     for i,s in enumerate(idfr):
-        if mpi_rank == 0 and key == '<INLETS>': print ('Inlet  id:', ids[i], ' flowrate (mL/s):', s)
+        if mpi_rank == 0 and key == '<INLETS>':  print ('Inlet  id:', ids[i], ' flowrate (mL/s):', s)
         if mpi_rank == 0 and key == '<OUTLETS>': print ('Outlet id:', ids[i], ' flowrate ratio:', s)
 
 
@@ -298,7 +298,7 @@ def problem_parameters(commandline_kwargs, NS_parameters, **NS_namespace):
         print('<!> Unable to run without a mesh file.')
 
     # Obtain mesh information
-    id_in, Q_means, inlet_area, fcs = read_mesh_info(mesh_info_path, '<INLETS>')
+    id_in, Q_means, inlet_area, fcs    = read_mesh_info(mesh_info_path, '<INLETS>')
     id_out, area_ratio, outlet_area, _ = read_mesh_info(mesh_info_path, '<OUTLETS>')
 
 
@@ -574,12 +574,13 @@ def poiseuille_inlet_velocity_xaxis(mesh, ds_inlet, Q_inflow, **NS_namespace):
     return [uinx_expression, Constant(0.0), Constant(0.0)]
 
 
-def gaussian_inlet_noise(tstep, sigma=0.01, noise_y=True, noise_z=True):
+def gaussian_inlet_noise(tstep, sigma=0.001, noise_y=True, noise_z=True):
     """
     Returns (eps_y, eps_z) transverse inlet noise [mm/ms == m/s].
+    Sigma has units m/s.
     Each component ~ N(0, sigma^2); set noise_y/noise_z=False to suppress a direction.
     Seeded with tstep so all MPI ranks draw identical values without broadcast.
-    Both draws always occur so eps_z is always the second draw regardless of noise_y.
+    Sigma has units m/s.
     """
     rng = np.random.default_rng(seed=tstep)
     eps_y = rng.normal(0.0, sigma)
@@ -623,11 +624,14 @@ def create_bcs(u_, p_, p_1, t, NS_expressions, V, Q, area_ratio, mesh, subdomain
         tmp_a, tmp_c, tmp_r, tmp_n = Womersley.compute_boundary_geometry_acrn(mesh, dS[id_in[i]], normals)
         
         # Create the inlet flow based on the flow type given by user
+
+        # Option 1: Pulsatile Womersley
         if NS_parameters['inlet_BC_type'] == 'pulsatile': #if fcs_i_filename[0:3] == 'FC_':
             if mpi_rank == 0:
                 print ('- loading inflow wave form:', fcs_i_filename)
             inlet_i = Womersley.make_womersley_bcs_2(NS_namespace["period"], Q_means[i], fcs_i_filename, mesh, nu, tmp_a, tmp_c, tmp_r, tmp_n, velocity_degree, flat_profile_at_intlet_bc)
-  
+
+        # Option 2: Ramp inflow (linearly increasing)
         elif NS_parameters['inlet_BC_type'] == 'ramp':
   
             # Surface integrand over the boundaries
@@ -641,7 +645,11 @@ def create_bcs(u_, p_, p_1, t, NS_expressions, V, Q, area_ratio, mesh, subdomain
             #inlet_i = poiseuille_inlet_velocity(mesh, ds_inlet, Q_inflow)
             inlet_i = poiseuille_inlet_velocity_xaxis(mesh, ds_inlet, Q_inflow)
 
+        # Option 3: Constant
+        elif NS_parameters['inlet_BC_type'] == 'constant':
 
+
+        # Option 4: Custom
         else: #THIS DOES NOT CURRENTLY WORK #NS_parameters['inlet_BC_type'] == 'custom'
             if mpi_rank == 0:
                 print ('- loading custom inflowrate function:', fcs_ifname)
@@ -755,7 +763,7 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
     # USe norm('linf') to get absolute value so negative/reverse-flow velocities are captured too
     max_u = max(u_[i].vector().norm('linf') for i in range(mesh.geometry().dim()))
     CFL = NS_parameters['dt'] * max_u / mesh.hmin()
-    if mpi_rank == 0 and tstep % 10 == 0:
+    if mpi_rank == 0 and tstep % 100 == 0:
         print(f"For cycle= {current_cycle}  tstep= {tstep}  t(ms)= {t:.2f}:        CFL= {CFL:.4f}")
 
 
@@ -768,7 +776,7 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
 
     elif NS_parameters['inlet_BC_type'] == 'ramp':
         # Adding noise to the lateral velocity components (y and z)
-        eps_y, eps_z = gaussian_inlet_noise(tstep, sigma=0.01, noise_y=False, noise_z=False)
+        eps_y, eps_z = gaussian_inlet_noise(tstep, sigma=0.01, noise_y=True, noise_z=True)
         for inlet in NS_expressions["inlet"]:
             #inlet[0].t = t
             inlet[0].Q_inflow = ramp_Q_inflow(t)
@@ -798,7 +806,7 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
         R_in                  = np.sqrt(inout_area[inlet_id] / np.pi)       # inlet radius (mm)
         Re_ins[inlet_id]      = u_mean_in * (2*R_in) / NS_parameters["nu"]
     Q_ins_sum = sum(Q_ins.values())
-    if mpi_rank == 0 and tstep % 10 == 0:
+    if mpi_rank == 0 and tstep % 100 == 0:
         print(f'Q_in(mL/s)= {Q_ins_sum:.4f}, umax_in(m/s)= {umax_ins[id_in[0]]:.4f}, Reynolds_in= {Re_ins[id_in[0]]:.1f} \n')
 
     # Out-Going Flux
