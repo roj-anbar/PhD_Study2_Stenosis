@@ -27,13 +27,14 @@
 #   - uOrder               : FE polynomial degree for velocity (default: 1)
 #   - save_frequency       : save output every N steps
 #   - checkpoint           : write restart checkpoint every N steps
-#   - inlet_BC_type        : type of the inlet boundary condition --> choose from: {'pulsatile', 'ramp', 'custom'} (default is 'pulsatile')
+#   - inlet_BC_type        : type of the inlet boundary condition --> choose from: {'pulsatile', 'ramp', 'constant', 'custom'} (default is 'pulsatile')
 #
 # OPTIONAL:
 #   - restart_folder           : path to a previous results folder to restart from
 #   - zero_pressure_outlets    : set True to enforce p=0 at all outlets (default: False)
 #   - save_first_cycle         : set True to also save the spin-up cycle (default: False)
 #   - flat_profile_at_intlet_bc: set True for plug/flat inlet profile (default: False)
+#   - inflowrate_constant_mLs  : constant inflow rate [mL/s], used when inlet_BC_type='constant' (default: 5.0)
 #
 # OUTPUTS:
 #   - Results written under ./results/{case_fullname}/
@@ -309,7 +310,6 @@ def problem_parameters(commandline_kwargs, NS_parameters, **NS_namespace):
         NS_parameters.update(pickle.load(f))
         f.close()
         NS_parameters['restart_folder'] = restart_folder
-        #Assign case name: pipe_ipcs_ab_cn_VWI_03k_LICA_constant_ts10000_cycles3_uOrder1
         case_name = NS_parameters['case_name']
         case_fullname = NS_parameters['case_fullname']
 
@@ -373,7 +373,8 @@ def problem_parameters(commandline_kwargs, NS_parameters, **NS_namespace):
             #plot_interval      = 10e10,
 
 
-            inlet_BC_type               = get_cmdarg(commandline_kwargs, 'inlet_BC_type', 'pulsatile'), # choose from 'ramp', 'pulsatile', 'custom'
+            inlet_BC_type               = get_cmdarg(commandline_kwargs, 'inlet_BC_type', 'pulsatile'), # choose from 'ramp', 'pulsatile', 'constant', 'custom'
+            Qin_constant_mLs            = get_cmdarg(commandline_kwargs, 'inflowrate_constant_mLs', 5.0),         # constant inflow rate, used when inlet_BC_type='constant' [mL/s]
             not_zero_pressure_outlets   = not get_cmdarg(commandline_kwargs, 'zero_pressure_outlets', False),
             include_gravity             = get_cmdarg(commandline_kwargs, 'include_gravitational_effects', False),
             flat_profile_at_intlet_bc   = get_cmdarg(commandline_kwargs, 'flat_profile_at_intlet_bc', False),
@@ -534,12 +535,30 @@ def flow_waveform(Qmean, cycles, period, time_steps, FC):
 """
 
 
-def ramp_Q_inflow(t):
+def ramp_inflowrate(t, slope=2, offset=0.01):
     """
     Linear ramp flowrate for the 'ramp' inlet_BC_type.
     t in ms (simulation time); returns Q_inflow in mL/s (consistent legacy units).
+
+    slope  : ramp rate [mL/s^2] (t/1000 converts ms -> s, so Q grows by `slope` mL/s every second)
+    offset : starting flowrate at t=0 [mL/s]
     """
-    return 10 #2 * t / 1000 + 0.01
+    return slope * t / 1000 + offset
+
+
+def constant_inflowrate(t, Q=5.0, ramp_duration=50.0):
+    """
+    Constant flowrate for the 'constant' inlet_BC_type, with a short linear ramp-up
+    from 0 to Q at the start of the simulation to avoid initialization shocks.
+    Returns Q_inflow in mL/s.
+
+    t [ms]            : simulation time [ms]
+    Q [mL/s]          : desired constant flowrate, set via the 'inflowrate_constant_mLs' commandline parameter (default 5.0)
+    ramp_duration[ms] : duration of the ramp-up,(default 50.0)
+    """
+    if t >= ramp_duration:
+        return Q
+    return Q * (t / ramp_duration)
 
 
 def poiseuille_inlet_velocity_xaxis(mesh, ds_inlet, Q_inflow, **NS_namespace):
@@ -637,7 +656,7 @@ def create_bcs(u_, p_, p_1, t, NS_expressions, V, Q, area_ratio, mesh, subdomain
             # Surface integrand over the boundaries
             inlet_tag = id_in[i] #inlet_tag=2
             ds_inlet = dS[inlet_tag]
-            Q_inflow = ramp_Q_inflow(t) #2*t/1000 + 0.01 #[ml/s]
+            Q_inflow = ramp_inflowrate(t) #2*t/1000 + 0.01 #[ml/s]
 
             # for debugging
             #if mpi_rank == 0: print('Inlet tag = ', inlet_tag, 'ds_inlet  = ', ds_inlet)
@@ -648,6 +667,12 @@ def create_bcs(u_, p_, p_1, t, NS_expressions, V, Q, area_ratio, mesh, subdomain
         # Option 3: Constant
         elif NS_parameters['inlet_BC_type'] == 'constant':
 
+            # Surface integrand over the boundaries
+            inlet_tag = id_in[i]
+            ds_inlet = dS[inlet_tag]
+            Q_inflow = constant_inflowrate(t, NS_parameters['Qin_constant_mLs'])
+
+            inlet_i = poiseuille_inlet_velocity_xaxis(mesh, ds_inlet, Q_inflow)
 
         # Option 4: Custom
         else: #THIS DOES NOT CURRENTLY WORK #NS_parameters['inlet_BC_type'] == 'custom'
@@ -776,12 +801,16 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
 
     elif NS_parameters['inlet_BC_type'] == 'ramp':
         # Adding noise to the lateral velocity components (y and z)
-        eps_y, eps_z = gaussian_inlet_noise(tstep, sigma=0.01, noise_y=True, noise_z=True)
+        eps_y, eps_z = gaussian_inlet_noise(tstep, sigma=0.01, noise_y=False, noise_z=False)
         for inlet in NS_expressions["inlet"]:
             #inlet[0].t = t
-            inlet[0].Q_inflow = ramp_Q_inflow(t)
+            inlet[0].Q_inflow = ramp_inflowrate(t)
             inlet[1].assign(eps_y)
             inlet[2].assign(eps_z)
+
+    elif NS_parameters['inlet_BC_type'] == 'constant':
+        for inlet in NS_expressions["inlet"]:
+            inlet[0].Q_inflow = constant_inflowrate(t, NS_parameters['Qin_constant_mLs'])
 
     timestep_cpu_time = time.time() - current_time
     current_time = time.time()
@@ -849,7 +878,7 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
 
     # ---------------------------------- Saving ----------------------------------------
     # If save_first_cycle is True it saves every cycle; otherwise skip cycle 0 and saves everything afterwards
-    should_save = save_first_cycle or (current_cycle > 0)
+    should_save = save_first_cycle or (current_cycle > 1)
     if should_save and tstep % save_freq == 0:
         h5stdio.Save(current_cycle, t, tstep, Q_ins, Q_outs, NS_parameters, 'Step-%06d' % tstep, q_)
         if mpi_rank == 0:
