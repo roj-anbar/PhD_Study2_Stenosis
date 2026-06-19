@@ -1,6 +1,7 @@
 # -----------------------------------------------------------------------------------------------------------------------
 # oasis_problem_stenosis.py 
 # This is the problem definition for Oasis/NSfracStep.py (patient-specific arteries/veins).
+# !!!! IMPORTANT: OASIS expects all parameters in [mm] and [ms] (mSI units) !!!! 
 #
 # __author__: Rojin Anbarafshan <rojin.anbar@gmail.com>
 # __date__:   2026-06
@@ -633,7 +634,8 @@ def create_bcs(u_, p_, p_1, t, NS_expressions, V, Q, area_ratio, mesh, subdomain
     # Womersley boundary condition at inlet
     id_in_count = len(id_in)
     if mpi_rank == 0:
-        print ('Inlet BC type is:', NS_parameters['inlet_BC_type'])
+        noise_status = 'noisy' if (NS_parameters['noise_y'] or NS_parameters['noise_z']) else 'clean'
+        print ('Inlet BC type is:', NS_parameters['inlet_BC_type'], '(%s)' % noise_status)
         print('Inlet', 'BCs' if id_in_count > 1 else 'BC', 'on boundaries:' if id_in_count > 1 else 'on boundary', id_in)
         firststr = '    %8s    %-12s    %10s    %15s    %6s'%('inlet_id','wave_form','period(ms)','flowrate(mL/s)','cells')
         secondstr = 'Inlets & Outlets Information\n'+'  id   %-45s  %-45s   %-12s   %-12s'%('center','normal','radius','area')

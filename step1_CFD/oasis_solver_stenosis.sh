@@ -150,6 +150,9 @@ apptainer exec \
   density_kgm3=$density_kgm3 \
   uOrder=$uOrder \
   inlet_BC_type=$inlet_BC_type \
+  inflowrate_constant_mLs=${inflowrate_constant_mLs:-5.0} \
+  noise_y=${noise_y:-False} \
+  noise_z=${noise_z:-False} \
   save_frequency=$save_frequency \
   save_first_cycle=$save_first_cycle \
   checkpoint=$checkpoint \
