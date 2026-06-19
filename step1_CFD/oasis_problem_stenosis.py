@@ -35,6 +35,9 @@
 #   - save_first_cycle         : set True to also save the spin-up cycle (default: False)
 #   - flat_profile_at_intlet_bc: set True for plug/flat inlet profile (default: False)
 #   - inflowrate_constant_mLs  : constant inflow rate [mL/s], used when inlet_BC_type='constant' (default: 5.0)
+#   - noise_y                  : set True to add Gaussian noise to the y-component of the inlet velocity (default: False)
+#   - noise_z                  : set True to add Gaussian noise to the z-component of the inlet velocity (default: False)
+#   - case_fullname is suffixed with '_noisy' if either noise_y or noise_z is True, otherwise '_clean'
 #
 # OUTPUTS:
 #   - Results written under ./results/{case_fullname}/
@@ -331,7 +334,10 @@ def problem_parameters(commandline_kwargs, NS_parameters, **NS_namespace):
         #txt += '_Per%d'%int(period)
 
         #case_fullname = ("art_" + mesh_name + txt + "_Newt370" + "_ts" + str(timesteps) + "_cy" + str(cycles) + "_uO" + str(uOrder))
-        case_fullname = (mesh_name + "_ts" + str(timesteps) + "_cy" + str(no_of_cycles))
+        noise_y = get_cmdarg(commandline_kwargs, 'noise_y', False)   # add Gaussian noise to the y-component of the inlet velocity
+        noise_z = get_cmdarg(commandline_kwargs, 'noise_z', False)   # add Gaussian noise to the z-component of the inlet velocity
+        noise_tag = "_noisy" if (noise_y or noise_z) else "_clean"
+        case_fullname = (mesh_name + "_ts" + str(timesteps) + "_cy" + str(no_of_cycles) + noise_tag)
         results_folder = f"./results/{case_fullname}_saveFreq{save_freq}"
 
         #####--------- IMPORTANT: OASIS expects all parameters in [mm] and [ms]! -------------####
@@ -343,41 +349,40 @@ def problem_parameters(commandline_kwargs, NS_parameters, **NS_namespace):
         nu_mm2ms = nu_m2s*1000 #convert from SI to units that oasis expects
 
         NS_parameters.update(
-            case_name           = case_name,
-            case_fullname       = case_fullname,
-            results_folder      = results_folder,
-            mesh_path           = mesh_path, 
-            id_in               = id_in,
-            id_out              = id_out,
-            area_ratio          = area_ratio,
+            case_name               = case_name,
+            case_fullname           = case_fullname,
+            results_folder          = results_folder,
+            mesh_path               = mesh_path, 
+            id_in                   = id_in,
+            id_out                  = id_out,
+            area_ratio              = area_ratio,
 
-            no_of_cycles        = no_of_cycles,                                                         # total number of cycles
-            period              = period,                                                               # time of a single cycle [ms]
-            T                   = period * no_of_cycles,                                                # total simulation time [ms]
-            dt                  = period / timesteps,                                                   # timestep size [ms]
-            time_steps          = timesteps,
-            nu                  = nu_mm2ms, #get_cmdarg(commandline_kwargs, 'viscosity', 0.0035),       # kinematic viscosity [mm^2/ms]
-            velocity_degree     = get_cmdarg(commandline_kwargs, 'uOrder', 1),                          # FE degree of velocity
+            no_of_cycles            = no_of_cycles,                                                         # total number of cycles
+            period                  = period,                                                               # time of a single cycle [ms]
+            T                       = period * no_of_cycles,                                                # total simulation time [ms]
+            dt                      = period / timesteps,                                                   # timestep size [ms]
+            time_steps              = timesteps,
+            nu                      = nu_mm2ms, #get_cmdarg(commandline_kwargs, 'viscosity', 0.0035),       # kinematic viscosity [mm^2/ms]
+            velocity_degree         = get_cmdarg(commandline_kwargs, 'uOrder', 1),                          # FE degree of velocity
 
-            save_freq           = get_cmdarg(commandline_kwargs, 'save_frequency', 5),                  # save every N steps 
-            save_first_cycle    = get_cmdarg(commandline_kwargs, 'save_first_cycle', False),            # flag to save first cycle or not
-            save_exact_tsteps   = get_cmdarg(commandline_kwargs, 'save_exact_tsteps', False),           # save exact timesteps
-            #save_tsteps_list   = get_cmdarg(commandline_kwargs, 'save_exact_tsteps', False), 
-            checkpoint          = get_cmdarg(commandline_kwargs, 'checkpoint', 500),                    # write restart every N steps
-            killtime            = get_cmdarg(commandline_kwargs, 'maxwtime', max_wtime_before_kill),
-            dump_stats          = 1000,
-            compute_flux        = 5,
-            save_step           = get_cmdarg(commandline_kwargs, 'save_step', 100000),                  # Mehdi doesn't use the oasis output
-            print_intermediate_info = 1000,                                                              # Controls the frequency of printing summary of timings to log file
-            #print_WSS          = get_cmdarg(commandline_kwargs, 'print_WSS', True),
-            #plot_interval      = 10e10,
+            save_freq               = get_cmdarg(commandline_kwargs, 'save_frequency', 5),                  # save every N steps 
+            save_first_cycle        = get_cmdarg(commandline_kwargs, 'save_first_cycle', False),            # flag to save first cycle or not
+            save_exact_tsteps       = get_cmdarg(commandline_kwargs, 'save_exact_tsteps', False),           # save exact timesteps
+            #save_tsteps_list       = get_cmdarg(commandline_kwargs, 'save_exact_tsteps', False), 
+            checkpoint              = get_cmdarg(commandline_kwargs, 'checkpoint', 500),                    # write restart every N steps
+            killtime                = get_cmdarg(commandline_kwargs, 'maxwtime', max_wtime_before_kill),
+            dump_stats              = 1000,
+            compute_flux            = 5,
+            save_step               = get_cmdarg(commandline_kwargs, 'save_step', 100000),                  # Controls the frequency of printing summary of timings to log file
+            print_intermediate_info = 10000,                                                              
 
-
-            inlet_BC_type               = get_cmdarg(commandline_kwargs, 'inlet_BC_type', 'pulsatile'), # choose from 'ramp', 'pulsatile', 'constant', 'custom'
-            Qin_constant_mLs            = get_cmdarg(commandline_kwargs, 'inflowrate_constant_mLs', 5.0),         # constant inflow rate, used when inlet_BC_type='constant' [mL/s]
-            not_zero_pressure_outlets   = not get_cmdarg(commandline_kwargs, 'zero_pressure_outlets', False),
-            include_gravity             = get_cmdarg(commandline_kwargs, 'include_gravitational_effects', False),
-            flat_profile_at_intlet_bc   = get_cmdarg(commandline_kwargs, 'flat_profile_at_intlet_bc', False),
+            inlet_BC_type             = get_cmdarg(commandline_kwargs,      'inlet_BC_type', 'pulsatile'), # choose from 'ramp', 'pulsatile', 'constant', 'custom'
+            Qin_constant_mLs          = get_cmdarg(commandline_kwargs,      'inflowrate_constant_mLs', 5.0),         # constant inflow rate, used when inlet_BC_type='constant' [mL/s]
+            noise_y                   = noise_y,                                                            # add Gaussian noise to the y-component of the inlet velocity
+            noise_z                   = noise_z,                                                            # add Gaussian noise to the z-component of the inlet velocity
+            not_zero_pressure_outlets = not get_cmdarg(commandline_kwargs,  'zero_pressure_outlets', False),
+            include_gravity           = get_cmdarg(commandline_kwargs,      'include_gravitational_effects', False),
+            flat_profile_at_intlet_bc = get_cmdarg(commandline_kwargs,      'flat_profile_at_intlet_bc', False),
             
             use_krylov_solvers  = True,
             krylov_solvers      = dict(
@@ -535,7 +540,7 @@ def flow_waveform(Qmean, cycles, period, time_steps, FC):
 """
 
 
-def ramp_inflowrate(t, slope=2, offset=0.01):
+def ramp_inflowrate(t, slope=2, offset=5):
     """
     Linear ramp flowrate for the 'ramp' inlet_BC_type.
     t in ms (simulation time); returns Q_inflow in mL/s (consistent legacy units).
@@ -801,7 +806,7 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
 
     elif NS_parameters['inlet_BC_type'] == 'ramp':
         # Adding noise to the lateral velocity components (y and z)
-        eps_y, eps_z = gaussian_inlet_noise(tstep, sigma=0.01, noise_y=False, noise_z=False)
+        eps_y, eps_z = gaussian_inlet_noise(tstep, sigma=0.01, noise_y=NS_parameters['noise_y'], noise_z=NS_parameters['noise_z'])
         for inlet in NS_expressions["inlet"]:
             #inlet[0].t = t
             inlet[0].Q_inflow = ramp_inflowrate(t)
