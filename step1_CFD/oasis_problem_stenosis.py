@@ -435,73 +435,77 @@ def mesh(mesh_path, **NS_namespace):
 
     print_section_header('Loading mesh file: ' + mesh_path)
 
-    #mesh_folder = mesh_path #path.join(path.dirname(path.abspath(__file__)), mesh_path)
-
     m =  Mesh(mesh_path)
     m.mpi_comm = mpi_comm
 
     # Mesh statistics
     num_points    = Function(FunctionSpace(m, "CG", 1)).vector().size()
-    vol           = MPI.sum(MPI.comm_world, assemble(Constant(1)*dx(m)))
-    cell_dia      = [Cell(m,i).circumradius() for i in range (m.num_cells())]
-    avg_cell_dia  = sum(cell_dia) / len(cell_dia)
+    mesh_volume   = MPI.sum(MPI.comm_world, assemble(Constant(1)*dx(m)))
+    cell_diameter      = [Cell(m,i).circumradius() for i in range (m.num_cells())]
+    avg_cell_diameter  = sum(cell_diameter) / len(cell_diameter)
     num_cells     = int( MPI.sum(MPI.comm_world, m.num_cells()) )
     #num_points   = int( MPI.sum(MPI.comm_world, m.num_vertices()) ) // shared points?
     hmin          = MPI.min(MPI.comm_world, m.hmin()) #[mm]
     hmax          = MPI.max(MPI.comm_world, m.hmax()) #[mm]
     num_facets    = int( MPI.sum(MPI.comm_world, m.num_facets()) )
     
-    pss = mesh_path.rfind('/')
-    pss = 0 if pss < 0 else pss+1
-    pos = mesh_path.rfind('.xml.gz')
-    if pos < 0: pos = mesh_path.rfind('.')
-    mesh_h5_filename = mesh_path[pss:pos]+'.h5'
-    mesh_h5_filepathname = os.path.join( NS_namespace['results_folder'], mesh_h5_filename)
+    # pss = mesh_path.rfind('/')
+    # pss = 0 if pss < 0 else pss+1
+    # pos = mesh_path.rfind('.xml.gz')
+    # if pos < 0: pos = mesh_path.rfind('.')
+    # mesh_h5_filename = mesh_path[pss:pos]+'.h5'
+    # mesh_h5_filepath = os.path.join( NS_namespace['results_folder'], mesh_h5_filename)
 
-    # Write mesh parameters to log
+    # Create HDF5 mesh filename
+    mesh_stem        = os.path.basename(mesh_path).replace('.xml.gz', '').replace('.xml', '')
+    mesh_h5_filename = mesh_stem + '.h5'
+    mesh_h5_filepath = os.path.join(NS_namespace['results_folder'], mesh_h5_filename)
+
+
+    # Write mesh params to log
     if mpi_rank == 0:
-        #print ("-"*100)
         print ("Mesh Name:                  ", mesh_path)
         print ("Number of cells:            ", num_cells)
         print ("Number of points:           ", num_points)
         print ("Number of facets:           ", num_facets)
-        print ("Mesh Volume:                ", vol)
+        print ("Mesh Volume:                ", mesh_volume)
         print ("Min cell diameter [mm]:     ", hmin)
         print ("Max cell diameter [mm]:     ", hmax)
-        print ("Average cell diameter [mm]: ", avg_cell_dia)
+        print ("Average cell diameter [mm]: ", avg_cell_diameter)
         sys.stdout.flush()
-        #info(m, False)
 
-    fd = MeshFunction("size_t", m, m.geometry().dim() - 1, m.domains())
+    boundary_markers = MeshFunction("size_t", m, m.geometry().dim() - 1, m.domains())
 
     inout_area = {}
     dS = {}
-    for id in NS_namespace['inlet_ids']:
-        dS[id] = ds(id, domain=m, subdomain_data=fd)
-        inout_area[id] = abs( assemble(1.0*dS[id]) )
-    for id in NS_namespace['outlet_ids']:
-        dS[id] = ds(id, domain=m, subdomain_data=fd)
-        inout_area[id] = abs( assemble(1.0*dS[id]) )
+    for inlet_id in NS_namespace['inlet_ids']:
+        dS[inlet_id] = ds(inlet_id, domain=m, subdomain_data=boundary_markers)
+        inout_area[inlet_id] = abs( assemble(1.0*dS[inlet_id]) )
+    for outlet_id in NS_namespace['outlet_ids']:
+        dS[outlet_id] = ds(outlet_id, domain=m, subdomain_data=boundary_markers)
+        inout_area[outlet_id] = abs( assemble(1.0*dS[outlet_id]) )
+    
     NS_namespace['inout_area'] = inout_area
 
     normals = FacetNormal(m)
 
     if mpi_rank == 0:
-        print('writing ', mesh_h5_filepathname)
+        print('writing ', mesh_h5_filepath)
         sys.stdout.flush()
 
     # Output the Mesh file into HDF5 format
-    Hdf = HDF5File(m.mpi_comm(), mesh_h5_filepathname, "w")
-    Hdf.write(m, '/Mesh')
-    Hdf.close()
+    hdf_file = HDF5File(m.mpi_comm(), mesh_h5_filepath, "w")
+    hdf_file.write(m, '/Mesh')
+    hdf_file.close()
 
-    h5stdio.SetMeshInfo(mesh_h5_filepathname, mesh_h5_filename, num_cells, num_points)
+    h5stdio.SetMeshInfo(mesh_h5_filepath, mesh_h5_filename, num_cells, num_points)
 
     print_section_footer()
 
-    return m, dS, fd, normals, m.geometry().dim(), inout_area
+    return m, dS, boundary_markers, normals, m.geometry().dim(), inout_area
 
 
+# --------------------------------------- Oasis Params --------------------------------------------------
 # Oasis hook: Overrides the default parameters
 def post_import_problem(NS_parameters, mesh, commandline_kwargs, NS_expressions, **NS_namespace):
     """Oasis hook: Called after importing from problem."""
@@ -515,15 +519,15 @@ def post_import_problem(NS_parameters, mesh, commandline_kwargs, NS_expressions,
 
     # If the mesh is a callable function, then create the mesh here.
     if callable(mesh):
-        mesh, dS, fd, nors, dim, inout_area= mesh(**NS_parameters)
+        mesh, dS, boundary_markers, normals, dimension, inout_area= mesh(**NS_parameters)
 
     assert(isinstance(mesh, Mesh))
 
     # Returned dictionary to be updated in the NS namespace
-    d = dict(mesh=mesh, dS=dS, subdomain_data=fd, normals=nors, dim=dim, inout_area=inout_area)
-    d.update(NS_parameters)
-    d.update(NS_expressions)
-    return d
+    dic = dict(mesh=mesh, dS=dS, subdomain_data=boundary_markers, normals=normals, dim=dimension, inout_area=inout_area)
+    dic.update(NS_parameters)
+    dic.update(NS_expressions)
+    return dic
 
 
 # --------------------------------------- Boundary Conditions --------------------------------------------
@@ -637,7 +641,7 @@ def create_bcs(u_, p_, p_1, t, NS_expressions, V, Q, area_ratio, mesh, subdomain
     print_section_header('Inspecting boundaries and making boundary conditions:')
 
     # Mesh function / boundaries
-    fd = subdomain_data
+    boundary_markers = subdomain_data
 
     # Extract inflow rate and outflow split ratios
     mesh_info_path = path.join('./data', NS_namespace["mesh_name"]+'.info')
@@ -695,7 +699,7 @@ def create_bcs(u_, p_, p_1, t, NS_expressions, V, Q, area_ratio, mesh, subdomain
             inlet_i = CustomFunction.make_custom_function_bcs(NS_namespace["period"], Q_means[i], waveform_filename, mesh, nu, tmp_a, tmp_c, tmp_r, tmp_n, velocity_degree, flat_profile_at_intlet_bc)
             
         inlets.append(inlet_i)
-        bci = [DirichletBC(V, ilt, fd, inlet_ids[i]) for ilt in inlet_i]
+        bci = [DirichletBC(V, ilt, boundary_markers, inlet_ids[i]) for ilt in inlet_i]
         for j in range(3): bc_inlet_u[j].append(bci[j])
 
         count = len( bci[0].get_boundary_values() )
@@ -724,7 +728,7 @@ def create_bcs(u_, p_, p_1, t, NS_expressions, V, Q, area_ratio, mesh, subdomain
     # 2. Wall BCs
     # Create No-slip BCs for the velocity at the walls
     wall = Constant(0.0)
-    bc_wall = DirichletBC(V, wall, fd, 0) # wall is always with the id zero
+    bc_wall = DirichletBC(V, wall, boundary_markers, 0) # wall is always with the id zero
     
     # For DEBUG:
     #bc_wall_len = len(bc_wall.get_boundary_values())
@@ -755,7 +759,7 @@ def create_bcs(u_, p_, p_1, t, NS_expressions, V, Q, area_ratio, mesh, subdomain
         else:
             p_initial = 0
         outflow = Expression("p", p=p_initial, degree=pressure_degree)
-        bc = DirichletBC(Q, outflow, fd, ind)
+        bc = DirichletBC(Q, outflow, boundary_markers, ind)
         bc_p.append(bc)
         NS_expressions[ind] = outflow
         count  = len(bc.get_boundary_values())
@@ -806,7 +810,7 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
         print(f"For cycle= {current_cycle}  tstep= {tstep}  t(ms)= {t:.2f}:        CFL= {CFL:.4f}")
 
 
-    # fd = subdomain_data  # used in commented-out area assembly lines below
+    # boundary_markers = subdomain_data  # used in commented-out area assembly lines below
 
     # Update boundary condition
     if NS_parameters['inlet_BC_type'] == 'pulsatile': # Added by Rojin A.
@@ -840,7 +844,7 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
     umax_ins    = {}
     Re_ins      = {}
     for inlet_id in inlet_ids:
-        #inout_area[inlet_id] = abs( assemble(1.0*ds(inlet_id, domain=mesh, subdomain_data=fd)) )
+        #inout_area[inlet_id] = abs( assemble(1.0*ds(inlet_id, domain=mesh, subdomain_data=boundary_markers)) )
         pressure_in[inlet_id] = -assemble(p_*dS[inlet_id]) / inout_area[inlet_id]
         flux_in[inlet_id]     = assemble(dot(u_, normals)*dS[inlet_id])
         Q_ins[inlet_id]       = abs(flux_in[inlet_id])
@@ -859,7 +863,7 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
     Q_outs = {}
     pressure_out = {}
     for out_id in outlet_ids:
-        #inout_area[out_id] = abs( assemble(1.0*ds(out_id, domain=mesh, subdomain_data=fd)) )
+        #inout_area[out_id] = abs( assemble(1.0*ds(out_id, domain=mesh, subdomain_data=boundary_markers)) )
         pressure_out[out_id] = assemble(p_*dS[out_id]) / inout_area[out_id]
         flux_out[out_id]     = assemble(dot(u_, normals)*dS[out_id])
         Q_outs[out_id]       = abs(flux_out[out_id])
