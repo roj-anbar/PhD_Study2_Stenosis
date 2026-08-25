@@ -7,12 +7,12 @@
 # __date__   = 2025-09
 #
 # PURPOSE:
-#   - Define all case parameters for CFD in one place and submit oasis_solver.sh via sbatch.
+#   - Define all case parameters for CFD in one place and submit oasis_solver_PT.sh via sbatch.
 #   - Optional flags let you override key settings without editing the file.
 #
 # REQUIREMENTS:
-#   - oasis_solver.sh (the job script this wrapper submits)
-#   - oasis_problem.py (required in oasis_solver.sh)
+#   - oasis_solver_PT.sh (the job script this wrapper submits)
+#   - oasis_problem_PT.py (required in oasis_solver_PT.sh)
 #
 # EXECUTION:
 #   - Run this script from terminal by:
@@ -31,12 +31,12 @@ set -euo pipefail
 
 
 # Define path to your CFD Oasis solver (change accordingly)
-PATH_OASIS_SOLVER="/scratch/ranbar/My_Projects/Study2_srenosis/scripts/step1_CFD/oasis_solver_stenosis.sh"
+PATH_OASIS_SOLVER="/scratch/ranbar/My_Projects/Study2_stenosis/scripts/step1_CFD/oasis_solver_stenosis.sh"
 
 
 # Safety check for if file exists
 if [[ ! -f "$PATH_OASIS_SOLVER" ]]; then
-    echo "ERROR: Oasis slurm job script 'oasis_solver_stenosis.sh' not found:"
+    echo "ERROR: Oasis slurm job script 'oasis_solver_PT.sh' not found:"
     echo "       $OASIS_SLURM"
     exit 1
 fi
@@ -51,22 +51,26 @@ set -a
 
 scinet_user=ranbar                # your cluster username (need to specify this or this won't work at all)
 group_name=def-steinman           # group allocation to run the job under
-debug=on                          # job partition -> choose between 'on'/'off' (Whether or not you are using debug node)
+debug=off                         # job partition -> choose between 'on'/'off' (Whether or not you are using debug node)
 num_cores=100                     # number of cores to use per node (everything runs on a single node) 
-required_time="00:19:59"          # amount of time cluster will need to run the case (max 24 hours)
+required_time="05:59:59"          # amount of time cluster will need to run the case (max 24 hours)
 post_processing_time_minutes=180  # amount of time needed to post-process the case (this is run on a single proc)
 
-casename="eccentric_stenosis"          # What your case will be called in the output files & on cluster -- should be the same name as this script without the sh
-cycles=1                          # number of cycles to run, determines total simulation time (default: 2)
-period=915.0                      # waveform period [ms] (default: 915 ms)
-timesteps_per_cycle=1000         # number of timesteps for each cycle (default: 2000)
+casename="eccStenosis"            # What your case will be called in the output files & on cluster -- should be the same name as this script without the sh
+cycles=6                          # number of cycles to run, determines total simulation time (default: 2)
+period=1000.0                     # waveform period [ms] (default: 915 ms)
+timesteps_per_cycle=12000         # number of timesteps for each cycle (default: 2000)
 viscosity_mu_Pas=0.0037           # dynamic viscosity [Pa.s] (default: 0.0037 Pa.s)
 density_kgm3=1057                 # blood density [kg/m3] (default: 1057 kg/m3)
 uOrder=1                          # velocity FE order (default: 1)
-inlet_BC_type="ramp"              # type of the inlet boundary condition --> options: {'pulsatile', 'ramp', 'custom'} (default: 'pulsatile')
-
-save_first_cycle=True             # flag to save first cycle or not (default: False)
-save_frequency=10                  # write solution every N steps (default: 5)
+inlet_BC_type="ramp"              # type of the inlet boundary condition --> options: {'pulsatile', 'ramp', 'constant', 'custom'} (default: 'pulsatile')
+#inflowrate_constant_mLs=10       # constant inflow rate [mL/s], used when inlet_BC_type='constant' (default: 5.0)
+#ramp_slope=2                     # slope of inflow ramp [mL/s2], used when inlet_BC_type='ramp' (default: 2.0)
+ramp_offset=3                     # offset of inflow ramp [mL/s], used when inlet_BC_type='ramp' (default: 2.0)
+noise_y=False                     # add Gaussian noise to the y-component of the inlet velocity (default: False)
+noise_z=False                     # add Gaussian noise to the z-component of the inlet velocity (default: False)
+save_first_cycle=False            # flag to save first cycle or not (default: False)
+save_frequency=60                 # write solution every N steps (default: 5)
 checkpoint=500                    # write restart every N steps
 
 set +a
@@ -94,7 +98,7 @@ mkdir -p ./logs ./hpclog
 
 #------------------------------------------- Submit the job ----------------------------------------------------
 # All config is exported via environment (sbatch --export=ALL).
-# oasis_solver.sh should read these variables (e.g., $cycles, $save_frequency, …).
+# oasis_solver_PT.sh should read these variables (e.g., $cycles, $save_frequency, …).
 
 # Submit the job with defined parameters
 sbatch --export=ALL \
