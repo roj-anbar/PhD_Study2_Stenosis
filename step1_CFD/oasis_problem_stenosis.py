@@ -184,80 +184,86 @@ def get_file_paths(results_folder):
     return files
 
 
-def read_mesh_info(mesh_info_path, key):
+def read_mesh_info(mesh_info_path, boundary_key):
     """
     Parse the casename.info file for <INLETS> or <OUTLETS> blocks.
     Retrive the boundary information from the info file.
+    Each line has the format:
+        id  waveform_tag  (cx,cy,cz)  (nx,ny,nz)  radius  area  flowrate_or_ratio
 
     Returns:
-        ids        : list[int]      boundary ids
-        idfr       : list[float]    inlet mean flows (mL/s) OR outlet ratios (unitless)
-        ida        : list[float]    areas (mm^2)
-        fcs        : list[str]      waveform tags (for inlets); '_' for outlets
+        boundary_ids  : list[int]      mesh boundary tag IDs
+        flowrates     : list[float]    mean flowrates [mL/s] for inlets; OR split ratios for outlets
+        areas         : list[float]    areas (mm^2)
+        waveform_tags : list[str]      waveform file tags for inlets; OR 'None' for outlets
     """
-    # Extract inflow rate and outflow split ratios
+    # Extract inflow rate and outflow split ratios:
     # Sample
-    # p162
     # <INLETS>
-    # 3 ICA_V27:FC_MCA_10 (3.4278309480,13.32740523503,-28.2355071983) (-0.2155297545,0.12005896011,-0.9690886291) 1.7649351905 9.7860492613   A*0.27
+    # 3 ICA_V27:FC_MCA_10 (3.4,13.3,-28.2) (-0.2,0.1,-0.9) 1.76 9.78 5.16
     #
     # <OUTLETS>
-    # 1  None  (-16.8228963362,-1.42906111694,17.7845745237)  (-0.9847740285,-0.16502447805,-0.0546537689)   0.8568220486   2.3063814691   0.3318956234191912
-    # 2  None    (7.9704219814,-9.22385217254,15.0763376349)   (0.7251682706,-0.49373752256,-0.4799523290)   1.3398999124   5.6402011155   0.6681043765808088
+    # 1  None  (-16.8,-1.4,17.7)  (-0.9,-0.1,-0.1)   0.86   2.33   0.33
+    # 2  None    (7.9,-9.2,15.9)   (0.7,-0.4,-0.4)   1.33   5.64   0.66
 
-    #info = open(path.splitext(mesh_path)[0]+'.info', 'r').read()
+    # Initialize outputs
+    boundary_ids = []
+    flowrates = []
+    areas = []
+    radii = []
+    waveform_tags = []
+
+    # Open info file
     info = open(mesh_info_path, 'r').read()
 
-    # Looking for the given key
-    p1 = info.find(key)
-    if p1<0:
-        return [], [], []
-    p1 += len(key)
-    p2 = info.find('<', p1)
-    if p2<0:
-        buf = info[p1:]
+    # Looking for the given boundary key in the info file
+    boundary_info_start = info.find(boundary_key)
+    
+    # In case there is not info for the boundary
+    if boundary_info_start < 0: return [], [], [], []
+
+    boundary_info_start += len(boundary_key)                #to go the line after boundary key
+    boundary_info_end = info.find('<', boundary_info_start) #block ends when next <boundary> starts 
+    
+    # Reading the info block for the boundary
+    if boundary_info_end < 0:
+        boundary_info = info[boundary_info_start:] #read to end of mesh.info
     else:
-        buf = info[p1:p2-1]
-    lines = buf.split('\n')
+        boundary_info = info[boundary_info_start:boundary_info_end-1] #read to end of boundary block
+    
 
-    ids = []
-    idfr = []
-    ida = []
-    idr = []
-    fcs = []
-    # Reaing at the key values
+    lines = boundary_info.split('\n')
+    # Reading the info values for the boundary
     for line in lines:
-        ls = line.split()
-        if len(ls) > 1:
-            # id
-            ids.append(int(ls[0]))# eval(ls[ 0]))
-            # radius
-            idr.append(eval(ls[-3]))
-            # area
-            ida.append(eval(ls[-2]))
-            # flowrate or arearatio
-            s = ls[-1].replace('A[','a[').replace('R[','r[')
-            s = s.replace('A',ls[-2]).replace('R',ls[-3])
-            idfr.append(s)
-            # wave form
-            fcs.append(ls[1])
-    # evaluate all the expressions in the flowrates and outflow ratios
-    for i,expr in enumerate(idfr):
-        for j,k in enumerate(ids):
-             expr = expr.replace( 'r[%d]'%k, str(idr[j])).replace( 'a[%d]'%k, str(ida[j]))
-        idfr[i] = eval(expr)
+        tokens = line.split() #split the line from spaces
+        if len(tokens) > 1: #skip useless tokens (like line breaks and empty values)
+            boundary_ids.append(int(tokens[0]))
+            waveform_tags.append(tokens[1])
+            radii.append(eval(tokens[4]))
+            areas.append(eval(tokens[5]))
+            flowrates.append(tokens[6])          # store raw string, resolve later
+            # Last column may use A/R as shorthand for this boundary's area/radius
+            s = tokens[-1].replace('A[','a[').replace('R[','r[') #if flowrate is a single value replacements will do nothing
+            s = s.replace('A',tokens[5]).replace('R',tokens[4]) #replace for actual values
+            flowrates.append(s)
 
-    # sum of area ratio correction:
-    if key == '<OUTLETS>':
-        idfr[-1] = 1.0 - sum(idfr[:-1])
+    # Evaluate all the expressions in the flowrates and outflow ratios
+    for i,expr in enumerate(flowrates):
+        for j,k in enumerate(boundary_ids):
+             expr = expr.replace( 'r[%d]'%k, str(radii[j])).replace( 'a[%d]'%k, str(areas[j]))
+        flowrates[i] = eval(expr)
+
+    # Force outlet ratios to sum exactly to 1.0
+    if boundary_key == '<OUTLETS>':
+        flowrates[-1] = 1.0 - sum(flowrates[:-1])
 
     # print the summary
-    for i,s in enumerate(idfr):
-        if mpi_rank == 0 and key == '<INLETS>':  print ('Inlet  id:', ids[i], ' flowrate (mL/s):', s)
-        if mpi_rank == 0 and key == '<OUTLETS>': print ('Outlet id:', ids[i], ' flowrate ratio:', s)
+    for i, flow_value in enumerate(flowrates):
+        if mpi_rank == 0 and boundary_key == '<INLETS>':  print ('Inlet  id:', boundary_ids[i], ' flowrate (mL/s):', flow_value)
+        if mpi_rank == 0 and boundary_key == '<OUTLETS>': print ('Outlet id:', boundary_ids[i], ' flowrate ratio:', flow_value)
 
 
-    return ids, idfr, ida, fcs
+    return boundary_ids, flowrates, areas, waveform_tags
 
 
 """
@@ -338,7 +344,7 @@ def problem_parameters(commandline_kwargs, NS_parameters, **NS_namespace):
         noise_y = get_cmdarg(commandline_kwargs, 'noise_y', False)   # add Gaussian noise to the y-component of the inlet velocity
         noise_z = get_cmdarg(commandline_kwargs, 'noise_z', False)   # add Gaussian noise to the z-component of the inlet velocity
         noise_tag = "_noisy" if (noise_y or noise_z) else "_clean"
-        case_fullname = (mesh_name + "_ts" + str(timesteps) + "_cy" + str(no_of_cycles) + noise_tag)
+        case_fullname = (mesh_name + noise_tag + "_ts" + str(timesteps) + "_cy" + str(no_of_cycles))
         results_folder = f"./results/{case_fullname}_saveFreq{save_freq}"
 
         #####--------- IMPORTANT: OASIS expects all parameters in [mm] and [ms]! -------------####
@@ -350,6 +356,7 @@ def problem_parameters(commandline_kwargs, NS_parameters, **NS_namespace):
         nu_mm2ms = nu_m2s*1000 #convert from SI to units that oasis expects
 
         NS_parameters.update(
+            # Case-specific params
             case_name               = case_name,
             case_fullname           = case_fullname,
             results_folder          = results_folder,
@@ -358,6 +365,7 @@ def problem_parameters(commandline_kwargs, NS_parameters, **NS_namespace):
             id_out                  = id_out,
             area_ratio              = area_ratio,
 
+            # Physics params
             no_of_cycles            = no_of_cycles,                                                         # total number of cycles
             period                  = period,                                                               # time of a single cycle [ms]
             T                       = period * no_of_cycles,                                                # total simulation time [ms]
@@ -366,6 +374,7 @@ def problem_parameters(commandline_kwargs, NS_parameters, **NS_namespace):
             nu                      = nu_mm2ms, #get_cmdarg(commandline_kwargs, 'viscosity', 0.0035),       # kinematic viscosity [mm^2/ms]
             velocity_degree         = get_cmdarg(commandline_kwargs, 'uOrder', 1),                          # FE degree of velocity
 
+            # I/O params
             save_freq               = get_cmdarg(commandline_kwargs, 'save_frequency', 5),                  # save every N steps 
             save_first_cycle        = get_cmdarg(commandline_kwargs, 'save_first_cycle', False),            # flag to save first cycle or not
             save_exact_tsteps       = get_cmdarg(commandline_kwargs, 'save_exact_tsteps', False),           # save exact timesteps
@@ -377,14 +386,18 @@ def problem_parameters(commandline_kwargs, NS_parameters, **NS_namespace):
             save_step               = get_cmdarg(commandline_kwargs, 'save_step', 100000),                  # Controls the frequency of printing summary of timings to log file
             print_intermediate_info = 10000,                                                              
 
-            inlet_BC_type             = get_cmdarg(commandline_kwargs,      'inlet_BC_type', 'pulsatile'), # choose from 'ramp', 'pulsatile', 'constant', 'custom'
-            Qin_constant_mLs          = get_cmdarg(commandline_kwargs,      'inflowrate_constant_mLs', 5.0),         # constant inflow rate, used when inlet_BC_type='constant' [mL/s]
+            # Boundary conditions params
+            inlet_BC_type             = get_cmdarg(commandline_kwargs, 'inlet_BC_type', 'pulsatile'),       # choose from 'ramp', 'pulsatile', 'constant', 'custom'
+            Qin_constant_mLs          = get_cmdarg(commandline_kwargs, 'inflowrate_constant_mLs', 5.0),     # constant inflow rate, used when inlet_BC_type='constant' [mL/s]
+            ramp_slope                = get_cmdarg(commandline_kwargs, 'ramp_slope',  2),                   # slope of inflow ramp, used when inlet_BC_type='ramp'
+            ramp_offset               = get_cmdarg(commandline_kwargs, 'ramp_offset', 2),                   # offset of inflow ramp, used when inlet_BC_type='ramp'
             noise_y                   = noise_y,                                                            # add Gaussian noise to the y-component of the inlet velocity
             noise_z                   = noise_z,                                                            # add Gaussian noise to the z-component of the inlet velocity
-            not_zero_pressure_outlets = not get_cmdarg(commandline_kwargs,  'zero_pressure_outlets', False),
-            include_gravity           = get_cmdarg(commandline_kwargs,      'include_gravitational_effects', False),
-            flat_profile_at_intlet_bc = get_cmdarg(commandline_kwargs,      'flat_profile_at_intlet_bc', False),
+            not_zero_pressure_outlets = not get_cmdarg(commandline_kwargs, 'zero_pressure_outlets', False),
+            include_gravity           = get_cmdarg(commandline_kwargs,     'include_gravitational_effects', False),
+            flat_profile_at_intlet_bc = get_cmdarg(commandline_kwargs,     'flat_profile_at_intlet_bc', False),
             
+            # Krylov solver params
             use_krylov_solvers  = True,
             krylov_solvers      = dict(
                 monitor_convergence=False,
@@ -651,27 +664,26 @@ def create_bcs(u_, p_, p_1, t, NS_expressions, V, Q, area_ratio, mesh, subdomain
         
         # Create the inlet flow based on the flow type given by user
 
-        # Option 1: Pulsatile Womersley
+        # Option1: Pulsatile Womersley
         if NS_parameters['inlet_BC_type'] == 'pulsatile': #if fcs_i_filename[0:3] == 'FC_':
             if mpi_rank == 0:
                 print ('- loading inflow wave form:', fcs_i_filename)
             inlet_i = Womersley.make_womersley_bcs_2(NS_namespace["period"], Q_means[i], fcs_i_filename, mesh, nu, tmp_a, tmp_c, tmp_r, tmp_n, velocity_degree, flat_profile_at_intlet_bc)
 
-        # Option 2: Ramp inflow (linearly increasing)
+        # Option2: Ramp inflow (linearly increasing)
         elif NS_parameters['inlet_BC_type'] == 'ramp':
-  
             # Surface integrand over the boundaries
             inlet_tag = id_in[i] #inlet_tag=2
             ds_inlet = dS[inlet_tag]
-            Q_inflow = ramp_inflowrate(t) #2*t/1000 + 0.01 #[ml/s]
+            Q_inflow = ramp_inflowrate(t, NS_parameters['ramp_slope'], NS_parameters['ramp_offset'])
 
-            # for debugging
+            #For debugging
             #if mpi_rank == 0: print('Inlet tag = ', inlet_tag, 'ds_inlet  = ', ds_inlet)
 
             #inlet_i = poiseuille_inlet_velocity(mesh, ds_inlet, Q_inflow)
             inlet_i = poiseuille_inlet_velocity_xaxis(mesh, ds_inlet, Q_inflow)
 
-        # Option 3: Constant
+        # Option3: Constant
         elif NS_parameters['inlet_BC_type'] == 'constant':
 
             # Surface integrand over the boundaries
@@ -681,7 +693,7 @@ def create_bcs(u_, p_, p_1, t, NS_expressions, V, Q, area_ratio, mesh, subdomain
 
             inlet_i = poiseuille_inlet_velocity_xaxis(mesh, ds_inlet, Q_inflow)
 
-        # Option 4: Custom
+        # Option4: Custom
         else: #THIS DOES NOT CURRENTLY WORK #NS_parameters['inlet_BC_type'] == 'custom'
             if mpi_rank == 0:
                 print ('- loading custom inflowrate function:', fcs_ifname)
@@ -811,7 +823,7 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
         eps_y, eps_z = gaussian_inlet_noise(tstep, sigma=0.01, noise_y=NS_parameters['noise_y'], noise_z=NS_parameters['noise_z'])
         for inlet in NS_expressions["inlet"]:
             #inlet[0].t = t
-            inlet[0].Q_inflow = ramp_inflowrate(t)
+            inlet[0].Q_inflow = ramp_inflowrate(t, NS_parameters['ramp_slope'], NS_parameters['ramp_offset'])
             inlet[1].assign(eps_y)
             inlet[2].assign(eps_z)
 
