@@ -243,15 +243,30 @@ def read_mesh_info(mesh_info_path, boundary_key):
             areas.append(eval(tokens[5]))
             flowrates.append(tokens[6])          # store raw string, resolve later
             # Last column may use A/R as shorthand for this boundary's area/radius
-            s = tokens[-1].replace('A[','a[').replace('R[','r[') #if flowrate is a single value replacements will do nothing
-            s = s.replace('A',tokens[5]).replace('R',tokens[4]) #replace for actual values
-            flowrates.append(s)
+            #s = tokens[-1].replace('A[','a[').replace('R[','r[') #if flowrate is a single value replacements will do nothing
+            #s = s.replace('A',tokens[5]).replace('R',tokens[4]) #replace for actual values
+            #flowrates.append(s)
 
-    # Evaluate all the expressions in the flowrates and outflow ratios
-    for i,expr in enumerate(flowrates):
-        for j,k in enumerate(boundary_ids):
-             expr = expr.replace( 'r[%d]'%k, str(radii[j])).replace( 'a[%d]'%k, str(areas[j]))
+    # Flowrate (last column) may use A/R as shorthand for this boundary's area/radius
+    # Below script is to resolve this:
+
+    # Build lookup dicts now that all boundaries are collected
+    area_by_id   = dict(zip(boundary_ids, areas))
+    radius_by_id = dict(zip(boundary_ids, radii))
+
+    for i, (raw, area, radius) in enumerate(zip(flowrates, areas, radii)):
+        expr = raw
+        for bid in boundary_ids:            # cross-references A[id]/R[id] first
+            expr = expr.replace(f'A[{bid}]', str(area_by_id[bid]))
+            expr = expr.replace(f'R[{bid}]', str(radius_by_id[bid]))
+        expr = expr.replace('A', str(area)).replace('R', str(radius))  # plain A/R last
         flowrates[i] = eval(expr)
+
+    # # Evaluate all the expressions in the flowrates and outflow ratios
+    # for i,expr in enumerate(flowrates):
+    #     for j,k in enumerate(boundary_ids):
+    #          expr = expr.replace( 'r[%d]'%k, str(radii[j])).replace( 'a[%d]'%k, str(areas[j]))
+    #     flowrates[i] = eval(expr)
 
     # Force outlet ratios to sum exactly to 1.0
     if boundary_key == '<OUTLETS>':
