@@ -565,7 +565,7 @@ def calculate_mean_spectrogram(var_name, var_array, STFT_params):
             'overlap_frac': overlap_frac,
         }
 
-    
+
     return spectrogram_data
 
 
@@ -768,7 +768,7 @@ def classify_spectrogram_phases(spectrogram_data, spectral_analysis_params):
     return Q_phases, spectral_metrics
 
 
-def plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data, Q_phases, spectral_metrics, analysis_params, plot_title, flag_plot_phases=True):
+def plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data, Q_phases, spectral_metrics, analysis_params, plot_title, flag_plot_phases=False):
     """
     Plot and save spectrograms and spectral metrics as PNG files.
     """
@@ -801,20 +801,15 @@ def plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data
     # ------------------------ Subplot 0: Spectrogram ----------------------------
     spectrogram = ax[0].pcolormesh(bins_Q, freqs, spectrogram_signal, shading='gouraud', cmap='inferno')
     # Set the limit for power colormap
-    spectrogram.set_clim(analysis_params['SPL_db_min'], analysis_params['SPL_db_max'])
+    #spectrogram.set_clim(analysis_params['SPL_db_min'], analysis_params['SPL_db_max'])
 
 
     ax[0].set_ylabel('Frequency (Hz)',   fontweight='bold', fontsize=font_size, labelpad=10)
-
-    # Set different y limits based on the case
-    if 'PTSeg043' in case_name:
-        ax[0].set_ylim([0, analysis_params['freq_mid']/2])
-    else:
-        ax[0].set_ylim([0, 3000]) #analysis_params['freq_max']])
+    #ax[0].set_ylim([0, 5000]) #analysis_params['freq_max']])
 
     # Adding the colorbar
-    #cbar = fig.colorbar(spectrogram, ax=ax[0], orientation='vertical') #pad=0.5
-    #cbar.set_label('SPL (dB)', rotation=270, labelpad=15, size=16, fontweight='bold')
+    cbar = fig.colorbar(spectrogram, ax=ax[0], orientation='vertical') #pad=0.5
+    cbar.set_label('SPL (dB)', rotation=270, labelpad=15, size=16, fontweight='bold')
 
 
     # ------------------------ Subplot 1: Mean power ----------------------------
@@ -834,9 +829,9 @@ def plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data
 
 
     #------- Common x-axis settings
-    for a in ax:
-        a.set_xlim([analysis_params['Q_min'], analysis_params['Q_cut']])
-        a.tick_params(direction='in')
+    # for a in ax:
+    #     a.set_xlim([analysis_params['Q_min'], analysis_params['Q_cut']])
+    #     a.tick_params(direction='in')
         #a.set_xlabel('Flow rate (mL/s)', fontweight='bold', labelpad=10)
     ax[2].set_xlabel('Flow rate (mL/s)', fontweight='bold', fontsize=font_size, labelpad=10)
 
@@ -894,7 +889,7 @@ def compute_and_save_spectrogram_perROI_for_idealGeom(
     """
 
     STFT_params = dict(STFT_params)  # avoid mutating caller's dict
-    STFT_params["sampling_rate"] = timesteps_per_cyc / period_seconds
+    STFT_params["sampling_rate"] = timesteps_per_cyc / period_seconds / 100
     window_length = STFT_params.get("window_length")
 
     axis_label  = {0: "X", 1: "Y", 2: "Z"}.get(pipe_axis, str(pipe_axis))
@@ -915,9 +910,6 @@ def compute_and_save_spectrogram_perROI_for_idealGeom(
     pids = extract_wall_points_perROI_idealGeom(surf_mesh, x1_region, x2_region, pipe_axis=pipe_axis)
     print(f"    Found {pids.size} wall points.")
 
-    if save_roi:
-        roi_surf = surf_mesh.extract_points(pids, adjacent_cells=False)
-        roi_surf.save(str(output_folder_ROIs / f"{shortname}_xrange.vtp"))
 
     wall_pressure_region   = wall_pressure[pids, :]
     spectrogram_title = f"{case_name}_win{window_length}_region{shortname}"
@@ -931,10 +923,9 @@ def compute_and_save_spectrogram_perROI_for_idealGeom(
 
     spectrogram_data_filt = filter_raw_spectrogram(spectrogram_data, spectral_analysis_params)
     Q_phases, spectral_metrics = classify_spectrogram_phases(spectrogram_data_filt, spectral_analysis_params)
-    plot_spectrogram_and_metrics(
-        output_folder_imgs, case_name,
-        spectrogram_data_filt, Q_phases, spectral_metrics,
-        spectral_analysis_params, spectrogram_title)
+    plot_spectrogram_and_metrics(output_folder_imgs, case_name,
+                                spectrogram_data_filt, Q_phases, spectral_metrics,
+                                spectral_analysis_params, spectrogram_title)
 
 
 # ======================================================================================================
@@ -952,7 +943,7 @@ def parse_args():
     ap.add_argument("--n_process",      type=int,            help="Number of parallel processes", default=max(1, mp.cpu_count() - 1))
 
     ap.add_argument("--density",           type=float,  default=1057,   help="Blood density [kg/m3] (default: 1057)")
-    ap.add_argument("--period_seconds",    type=float,  default=0.915,  help="Period in seconds")
+    ap.add_argument("--period_seconds",    type=float,  default=1,  help="Period in seconds")
     ap.add_argument("--timesteps_per_cyc", type=int,                    help="Number of timesteps per cycle")
     ap.add_argument("--spec_quantity",     type=str,    required=True,  choices=["wallpressure","velocity","qcriterion"], help="Quantity of interest used for spectrogram")
     ap.add_argument("--spec_regions_csv",  type=str,    default=None,   help="CSV defining anatomical regions. idealized: columns x_start_D, x_end_D, region_shortname, flag_save_ROI. patient_specific: columns ROI_start_center_id, ROI_end_center_id, ROI_stride, ROI_radius.")   
@@ -1121,7 +1112,7 @@ def main():
 
         # Assemble variable array
         if args.spec_quantity == 'wallpressure':
-            spec_quantity_array = read_wallpressure_from_h5_files_parallel(CFD_h5_files, surf_mesh, args.n_process, args.density) 
+            spec_quantity_array = read_wallpressure_from_h5_files_parallel(CFD_h5_files, surf_mesh, args.n_process, args.density)
         elif args.spec_quantity == 'velocity':
             raise ValueError(f'Not implemented yet for velocity spectrograms!')
 
@@ -1164,7 +1155,7 @@ def main():
                 output_folder_ROIs       = output_folder_ROIs,
                 surf_mesh                = surf_mesh,
                 wall_pressure            = spec_quantity_array,
-                spec_region                   = region,
+                spec_region              = region,
                 pipe_diameter            = args.pipe_diameter,
                 pipe_axis                = args.pipe_axis,
                 period_seconds           = period_seconds,
