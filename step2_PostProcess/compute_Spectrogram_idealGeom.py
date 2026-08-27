@@ -176,32 +176,82 @@ def load_surface_mesh(mesh_file:Path) -> pv.PolyData:
     return surf
 
 
-def load_volume_mesh(mesh_file: Path) -> pv.UnstructuredGrid:
+def load_surface_mesh_from_xmlgz(xml_gz_path: str) -> pv.PolyData:
     """
-    Create a PyVista UnstructuredGrid from the volumetric mesh stored in a BSLSolver-style HDF5.
+    Load wall surface from a DOLFIN XML.gz mesh file without requiring FEniCS.
 
-    Expects datasets:
-      Mesh/coordinates : (Npoints, 3) float
-      Mesh/topology    : (Ncells,  4) int  - tetrahedra expected
+    Wall facets are entries in <domains>/<mesh_value_collection dim="2"> with value="0".
+    DOLFIN local face rule: face i of tet (v0,v1,v2,v3) uses all vertices except v[i].
+
+    Returns PyVista PolyData matching load_surface_mesh() output:
+      - points                      : XYZ of wall nodes
+      - point_data['vtkOriginalPtIds'] : global volume-mesh node IDs
     """
-    
-    with h5py.File(mesh_file, 'r') as h5:
-        coords = np.array(h5['Mesh/coordinates'])  # coords of volumetric points (n_points, 3)
-        cells  = np.array(h5['Mesh/topology'])     # connectivity of volumetric points (n_cells, 4) -> tetrahedrons
-        
-    # Create connectivity array compatible with VTK --> requires a size prefix per cell (here '4' for tetrahedrons)
-    # VTK cell array layout = [nverts, v0, v1, v2, v3, nverts, ...]
-    n_cells        = cells.shape[0]
-    node_per_cell  = 4      # the volumetric cells are tets with size of 4 (4 nodes per elem)
-    cell_types     = np.full(n_cells, pv.CellType.TETRA, dtype=np.uint8)
-    cell_size      = np.full((n_cells, 1), node_per_cell, dtype = np.int64)  # array of size (n_cells, 1) filled with 4 
-    cells_vtk      = np.hstack([cell_size, cells]).ravel() # horizontal stacking of array / ravel: flattens the array into a 1d array
+    import gzip
+    import xml.etree.ElementTree as ET
 
+    FACE_VERTS = [[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]]
 
-    # Build grid and attach points
-    vol_mesh = pv.UnstructuredGrid(cells_vtk, cell_types, coords)
+    print(f"[mesh] Parsing XML.gz: {xml_gz_path} ...")
 
-    return vol_mesh, cells
+    n_verts = 0
+    n_tets  = 0
+    all_coords: np.ndarray = None
+    tet_verts:  np.ndarray = None
+    wall_tris        = []
+    wall_vertex_set  = set()
+    in_domain_mvc    = False
+
+    with gzip.open(xml_gz_path, 'rt') as f:
+        for event, elem in ET.iterparse(f, events=('start', 'end')):
+            tag = elem.tag
+
+            if event == 'start':
+                if tag == 'vertices':
+                    n_verts    = int(elem.get('size'))
+                    all_coords = np.zeros((n_verts, 3), dtype=np.float64)
+                elif tag == 'cells':
+                    n_tets    = int(elem.get('size'))
+                    tet_verts = np.zeros((n_tets, 4), dtype=np.int64)
+                elif tag == 'mesh_value_collection':
+                    in_domain_mvc = (elem.get('dim') == '2')
+
+            else:  # event == 'end'
+                if tag == 'vertex':
+                    idx = int(elem.get('index'))
+                    all_coords[idx] = [float(elem.get('x')), float(elem.get('y')), float(elem.get('z'))]
+                    elem.clear()
+                elif tag == 'tetrahedron':
+                    idx = int(elem.get('index'))
+                    tet_verts[idx] = [int(elem.get('v0')), int(elem.get('v1')),
+                                      int(elem.get('v2')), int(elem.get('v3'))]
+                    elem.clear()
+                elif tag == 'value' and in_domain_mvc:
+                    if int(elem.get('value')) == 0:
+                        ci   = int(elem.get('cell_index'))
+                        le   = int(elem.get('local_entity'))
+                        verts = tet_verts[ci][FACE_VERTS[le]]
+                        wall_tris.append(verts.copy())
+                        wall_vertex_set.update(verts.tolist())
+                    elem.clear()
+                elif tag == 'mesh_value_collection':
+                    in_domain_mvc = False
+
+    wall_point_ids = np.array(sorted(wall_vertex_set), dtype=np.int64)
+    wall_coords    = all_coords[wall_point_ids]
+
+    g2l           = {gid: lid for lid, gid in enumerate(wall_point_ids)}
+    wall_topology = np.array([[g2l[v] for v in tri] for tri in wall_tris], dtype=np.int64)
+
+    n_wall_cells = len(wall_topology)
+    cells_vtk    = np.hstack([np.full((n_wall_cells, 1), 3, dtype=np.int64), wall_topology]).ravel()
+
+    surf = pv.PolyData(wall_coords, cells_vtk)
+    surf.point_data['vtkOriginalPtIds'] = wall_point_ids
+
+    print(f"[mesh] Wall surface: {len(wall_point_ids)} nodes, {n_wall_cells} triangles")
+    return surf
+
 
 # --------------------------------- Parallel File Reader -----------------------------------------------
 
@@ -359,77 +409,6 @@ def short_time_fourier(data,
 
 
 # ---------------------------------- ROI Utilities -------------------------------------------
-def read_ROI_centerlines_from_csv(csv_path: str, ROI_type: str) -> np.ndarray:
-    """
-    Read a CSV of ROI centerline points with columns:
-    - Points:0, Points:1, Points:2
-    - FrenetTangent:0, FrenetTangent:1, FrenetTangent:2
-    Uses header names to locate columns.
-    Returns
-    - coords  : (n_points, 3) array of XYZ coordinates
-    - normals : (n_points, 3) array of normals
-    """
-
-    data = np.genfromtxt(csv_path, delimiter=",", names=True)
-
-    # Field names from the header (quotes in CSV are handled by genfromtxt)
-    #column_names = data.dtype.names
-
-    # Change the header names for your dataset
-    x = data['Points0']; y = data['Points1']; z = data['Points2']
-    
-    # We need the normals just for cylindrical ROI
-    if ROI_type == "cylinder":
-        normx = data['FrenetTangent0']; normy = data['FrenetTangent1']; normz = data['FrenetTangent2']
-
-    elif ROI_type == "sphere":
-        normx, normy, normz = np.zeros_like(x), np.zeros_like(y), np.zeros_like(z) 
-
-    else:
-        raise ValueError(f'ROI type {ROI_type} not recognized! Choose from <cylinder> or <sphere>.')
-
-    coords = np.vstack([x,y,z]).T
-    normals = np.vstack([normx,normy,normz]).T
-
-    return coords, normals
-
-def read_spec_regions_from_csv_patientGeom(csv_path: str) -> list:
-    """
-    Read ROI region definitions from a CSV file.
-    Required columns : ROI_start_center_id, ROI_end_center_id, ROI_stride, ROI_radius
-    Optional columns : region_shortname, ROI_height, flag_multi_ROI, flag_save_ROI
-    Any other columns (e.g. region_name) are silently ignored.
-    region_shortname is used for constructing the spectrograms labels.
-    Returns a list of dicts, one per row, containing only the recognised keys.
-    """
-    int_keys   = {"ROI_start_center_id", "ROI_end_center_id", "ROI_stride"}
-    float_keys = {"ROI_radius", "ROI_height"}
-    bool_keys  = {"flag_multi_ROI", "flag_save_ROI"}
-    str_keys   = {"region_fullname", "region_shortname"}
-    known_keys = int_keys | float_keys | bool_keys | str_keys
-
-    data = np.genfromtxt(csv_path, delimiter=",", names=True, dtype=None, encoding="utf-8")
-    if data.ndim == 0:
-        data = data.reshape(1)   # handle single-row CSV
-
-    spec_regions = []
-    for row in data:
-        region = {}
-        for key in data.dtype.names:
-            if key not in known_keys:
-                continue
-            val = row[key]
-            if key in int_keys:
-                region[key] = int(val)
-            elif key in float_keys:
-                region[key] = float(val)
-            elif key in bool_keys:
-                region[key] = bool(int(val)) if str(val).strip().lstrip('-').isdigit() else str(val).strip().lower() in ("true", "yes")
-            elif key in str_keys:
-                region[key] = str(val).strip()
-        spec_regions.append(region)
-
-    return spec_regions
 
 def read_spec_regions_from_csv_idealGeom(csv_path: str) -> list:
     """
@@ -484,76 +463,6 @@ def extract_wall_points_perROI_idealGeom(surf_mesh: pv.PolyData, x_lo: float, x_
             "Check pipe_diameter, pipe_axis, and region bounds."
         )
     return pids
-
-
-def assemble_quantity_array_perROI_patientGeom(output_folder_ROIs, surf_mesh, vol_mesh, var_name, var_array, ROI_params, return_indices=False):
-    """
-    Select mesh points inside a ROI with defined shape (ROI_type) and return the time series of variable of interest for those points.
-    Note: Units of the radius should be the same as units of the mesh.
-    """
-
-    # Unpack input parameters
-    ROI_id            = ROI_params.get("ROI_id")
-    ROI_type          = ROI_params.get("ROI_type")
-    ROI_center_coord  = ROI_params.get("ROI_center_coord")
-    ROI_center_normal = ROI_params.get("ROI_center_normal")
-    ROI_radius        = ROI_params.get("ROI_radius")
-    ROI_height        = ROI_params.get("ROI_height")
-    flag_save_ROI     = ROI_params.get("flag_save_ROI")
-
-    # --- Choose the mesh domain based on the given variable name
-
-    if var_name in {'wallpressure'}:
-        mesh = surf_mesh
-    elif var_name in {'velocity', 'qcriterion'}:
-        mesh = vol_mesh
-
-
-    # --- Compute coordinate of ROI center
-    # Case 1: Obtain spectrograms at a single point
-    if ROI_type == 'point':
-        ROI_pids = ROI_center_coord
-
-    # Case 2: Obtain spectrograms in a spherical or cylindrical ROI (using pyvista)
-    elif ROI_type in ['sphere', 'cylinder']:
-        
-        # Creates a surface geometry of ROI_type centered at the ROI point
-        if ROI_type == 'sphere':
-            ROI_geom = pv.Sphere(radius = ROI_radius, center = ROI_center_coord)
-        elif ROI_type == 'cylinder':
-            # Note: needed to add clean() to the surface to make it compatible with vtk 'select_enclosed_points'
-            ROI_geom = pv.Cylinder(center = ROI_center_coord, direction = ROI_center_normal, radius = ROI_radius, height = ROI_height).clean()
-
-        # Selects mesh points inside the ROI geometry surface with a certain tolerance (using pyvista)
-        ROI_mesh = mesh.select_enclosed_points(ROI_geom, tolerance=0.01)
-        
-        # Get indices of the points that falls in the ROI
-        points_in_ROI = ROI_mesh.point_data['SelectedPoints'].astype(bool)
-        ROI_pids = np.where(points_in_ROI)[0]
-
-        # Save ROI geometry to a .vtp file if requested (for visualization in paraview later)
-        if flag_save_ROI:
-            ROI_geom.save(f'{output_folder_ROIs}/{ROI_id}_{ROI_type}_c{ROI_center_coord}_r{ROI_radius}.vtp') 
-
-    # For any other types    
-    else:
-        raise ValueError("--ROI_type is not supported, choose from ['point', 'sphere', 'cylinder'].")
-
-
-    # --- Sanity check: ensure ROI is not empty ---
-    if ROI_pids.size == 0:
-        raise ValueError("No mesh points found in ROI. Try increasing --ROI_radius (check mesh units: mm vs m) or choose a different --ROI_center_coord. ")
-    else:
-        print(f"Found {ROI_pids.size} mesh points in {ROI_id} with center coordinate {ROI_center_coord} ...")
-
-    # Assemble variable array for ROI points
-    var_array_ROI = var_array[ROI_pids,:]
-
-    # Return the point ids if requested
-    if return_indices:
-        return ROI_pids
-
-    return var_array_ROI
 
 
 
@@ -963,233 +872,6 @@ def plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data
     plt.close(fig)
 
 
-
-def compute_and_save_spectrogram_perROI_for_patientGeom(
-                    case_name: str,
-                    output_folder_files: Path,
-                    output_folder_imgs: Path,
-                    output_folder_ROIs: Path,
-                    surf_mesh: pv.PolyData,
-                    vol_mesh: pv.PolyData,
-                    spec_quantity: str,
-                    spec_quantity_array: np.array,
-                    period_seconds: float, 
-                    timesteps_per_cyc: int,
-                    ROI_params: dict,
-                    STFT_params: dict,
-                    spectral_analysis_params: dict):
-    """
-    Computes and saves spectrograms for:
-      1) Multiple ROIs defined by roi_params["ROI_center_csv"], optionally:
-         a) one regional (multi-ROI) spectrogram
-         b) one spectrogram per ROI
-      2) A single ROI defined by roi_params["ROI_center_coord"], if provided
-
-    """
-    
-    # Unpack input parameters
-    ROI_type             = ROI_params.get("ROI_type")
-    ROI_center_coord     = ROI_params.get("ROI_center_coord")
-    ROI_center_csv       = ROI_params.get("ROI_center_csv")
-    ROI_start_center_id  = ROI_params.get("ROI_start_center_id")
-    ROI_end_center_id    = ROI_params.get("ROI_end_center_id")
-    ROI_stride           = ROI_params.get("ROI_stride")
-
-    window_length        = STFT_params.get("window_length")
-    overlap_frac         = STFT_params.get("overlap_frac")
-    n_fft                = STFT_params.get("n_fft")
-
-
-    # Compute sampling rate and add to STFT_params
-    sampling_rate = timesteps_per_cyc/period_seconds # Hz
-    STFT_params["sampling_rate"] = sampling_rate 
-
-    print (f"Computing {spec_quantity} spectrograms for {ROI_type} ROIs with STFT parameters: \n"
-           f"window_length (samples) = {window_length} \n"
-           f"overlap_fraction        = {overlap_frac} \n")
-
-
-    #----------------- Case 1: CSV mode --------------------
-    # Coordinates of multiple points given in a CSV file
-    if ROI_center_csv is not None:
-        ROI_centers, ROI_normals = read_ROI_centerlines_from_csv(ROI_center_csv, ROI_type)
-        
-        #print(f"Loaded {ROI_centers.shape[0]} ROI points from {ROI_center_csv}: \n")
-        
-        # Loop over all center points (or with a stride)
-
-        #-----Case 1A: Sweeping method (flag_multi_ROI = True).
-        # Generates a single spectrogram for a segment chosen based on multiple ROIs
-        # Here we assemble the pressure data for multiple ROIs first and then extract the average spectrogram
-        if ROI_params["flag_multi_ROI"]:
-
-            ROI_point_indices = []
-
-            # Loop over center points in the specified region
-            for i in range(ROI_start_center_id, ROI_end_center_id+1, ROI_stride): #to be inclusive of ROI_end
-                center = ROI_centers[i]
-                normal = ROI_normals[i]
-                ROI_id = f"ROI{i:02d}"
-
-                # Make a *copy* of ROI_params so we don't overwrite in-place
-                ROI_params_multi = ROI_params.copy()
-                ROI_params_multi["ROI_id"] = ROI_id
-                ROI_params_multi["ROI_center_coord"]  = center
-                ROI_params_multi["ROI_center_normal"] = normal
-
-                # Obtain the point ID of all ROIs combined
-                #ROI_point_indices.extend(assemble_quantity_array_perROI_patientGeom(output_folder_ROIs, surf_mesh, wall_pressure, ROI_params_multi, return_indices=True))
-                ROI_point_indices.extend(assemble_quantity_array_perROI_patientGeom(output_folder_ROIs, surf_mesh, vol_mesh, spec_quantity, spec_quantity_array, ROI_params_multi, return_indices=True))
-
-            # Keep only the unique indices
-            ROI_point_indices = np.unique(ROI_point_indices)
-            spec_quantity_array_ROI_multi = spec_quantity_array[ROI_point_indices, :]
-            
-            # [DEBUG] Save raw node signals for the ROI region
-            #raw_signals_npz = Path(output_folder_files) / f"raw_signal_{ROI_id}.npz"
-            #np.savez(raw_signals_npz, quantity_array=spec_quantity_array_ROI_multi, point_indices=ROI_point_indices)
-
-            print(f"Found {len(ROI_point_indices)} unique mesh points in total in the specified region. \n")
-
-            # Calculate average spectrogram for all the ROIs combined
-            spectrogram_data = calculate_mean_spectrogram(
-                                var_name= spec_quantity,
-                                var_array = spec_quantity_array_ROI_multi,
-                                STFT_params = STFT_params)
-            
-            # Construct the title: use region_shortname from CSV if available, else fall back to ROI ID range
-            region_name = ROI_params.get("region_shortname")
-            region_label = region_name if region_name else f'ROI{ROI_start_center_id}to{ROI_end_center_id}'
-            spectrogram_title = f'{case_name}_win{window_length}_region{region_label}'
-
-            # Save full spectrogram data
-            spec_output_npz = Path(output_folder_files) / f"{spectrogram_title}.npz"
-            np.savez(spec_output_npz, spectrogram_data)
-
-            # Cut spectrogram to analysis window
-            spectrogram_data_filt = filter_raw_spectrogram(spectrogram_data, spectral_analysis_params)
-
-            # Classify spectrogram phases
-            Q_phases, spectral_metrics = classify_spectrogram_phases(spectrogram_data_filt, spectral_analysis_params)
-
-            # Plot spectrograms and metrics
-            plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data_filt, Q_phases, spectral_metrics, spectral_analysis_params, spectrogram_title)
-
-            """
-            # -------- For plotting the wall pressure signal for individual nodes -------------
-            # Generate figs for a couple of points
-            #print('Generating figures of wall-pressure signals at some nodes ...')
-            # Create time array
-            # create index array
-            #array_timesteps = np.arange(len(spec_quantity_array_ROI_multi[1,:]))
-            #array_Qin = 2 * (array_timesteps * period_seconds/timesteps_per_cyc)
-
-            #for id in range(0,1000,100):
-
-            #    fig, ax = plt.subplots(1,1, figsize=(16,8))
-            #    ax.plot(array_Qin, spec_quantity_array_ROI_multi[id,:])
-            #    ax.set_xlabel('time (s)', fontweight='bold', fontsize=16, labelpad=0)
-            #    ax.set_ylabel('wall pressure (Pa)', fontweight='bold', fontsize=16, labelpad=0)
-            #    ax.set_xlim([2,10])
-            #    plt.tight_layout()
-            #    plt.savefig(Path(output_folder_imgs) / f"signal_wallPressure_node{id}.png") 
-            """
-        
-        #-----Case 1B: Generate one spectrogram per ROI
-        else:
-            print("[DEBUG] SCRIPT GOT HERE!!!!")
-            for i in range(ROI_start_center_id, ROI_end_center_id, ROI_stride): #range(0, len(ROI_centers), 1):
-                
-                center = ROI_centers[i]
-                normal = ROI_normals[i]
-                ROI_id = f"ROI{i:02d}"
-
-                # Add extra fields to ROI_params
-                ROI_params["ROI_id"] = ROI_id
-                ROI_params["ROI_center_coord"]  = center
-                ROI_params["ROI_center_normal"] = normal
-
-                # Assemble pressure data for each ROI
-                spec_quantity_array_ROI = assemble_quantity_array_perROI_patientGeom(output_folder_ROIs, surf_mesh, vol_mesh, spec_quantity, spec_quantity_array, ROI_params)
-
-                # Construct the title
-                spectrogram_title = f'{case_name}_win{window_length}_{ROI_id}' 
-                
-                # Calculate average spectrogram for each ROI
-                spectrogram_data = calculate_mean_spectrogram(
-                                    var_name = spec_quantity,
-                                    var_array = spec_quantity_array_ROI,
-                                    STFT_params = STFT_params)
-                
-                # Save full spectrogram data
-                spec_output_npz = Path(output_folder_files) / f"{spectrogram_title}.npz"
-                np.savez(spec_output_npz, spectrogram_data)
-
-                # Cut spectrogram to analysis window
-                spectrogram_data_filt = filter_raw_spectrogram(spectrogram_data, spectral_analysis_params)
-
-                # Classify spectrogram phases
-                Q_phases, spectral_metrics = classify_spectrogram_phases(spectrogram_data_filt, spectral_analysis_params)
-
-                # Plot spectrograms and metrics
-                plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data_filt, Q_phases, spectral_metrics, spectral_analysis_params, spectrogram_title)
-
-                """
-                # -------- For plotting the wall pressure signal for individual nodes -------------
-                # Generate figs for a couple of points
-                print('Generating figures of wall-pressure signals at some nodes ...')
-                # Create time array
-                array_timesteps = np.arange(len(spec_quantity_array_ROI[1,:]))
-                array_Qin = 2 * (array_timesteps * period_seconds/timesteps_per_cyc)
-
-                for id in range(0,1000,200):
-                    fig, ax = plt.subplots(1,1, figsize=(16,8))
-                    ax.plot(array_Qin, spec_quantity_array_ROI[id,:])
-                    ax.set_xlabel('Q_inlet (ml/s)', fontweight='bold', fontsize=16, labelpad=0)
-                    ax.set_ylabel('wall pressure (Pa)', fontweight='bold', fontsize=16, labelpad=0)
-                    ax.set_xlim([2,10])
-                    plt.tight_layout()
-                    plt.savefig(Path(output_folder_imgs) / f"signal_wallPressure_node{id}.png") 
-                """
-
-
-    #------- Case 2: Coords mode
-    # Single ROI center coordinates provided
-    elif ROI_center_coord is not None:
-        ROI_center_coord = np.array(ROI_center_coord, dtype=float)
-
-        # Add extra fields to ROI_params
-        ROI_params["ROI_id"] = "single"
-        ROI_params["ROI_center_coord"] = ROI_center_coord
-
-        # Assemble pressure data for each ROI
-        spec_quantity_array_ROI = assemble_quantity_array_perROI_patientGeom(output_folder_ROIs, surf_mesh, vol_mesh, spec_quantity, spec_quantity_array, ROI_params)
-
-        # Construct title
-        spectrogram_title = f'{case_name}_specP_win{window_length}' 
-        
-        spectrogram_data = calculate_mean_spectrogram(
-                            var_name = spec_quantity,
-                            var_array = spec_quantity_array_ROI,
-                            STFT_params = STFT_params)
-
-        # Save full spectrogram data
-        spec_output_npz = Path(output_folder_files) / f"{spectrogram_title}.npz"
-        np.savez(spec_output_npz, spectrogram_data)
-        
-        # Cut spectrogram to analysis window
-        spectrogram_data_filt = filter_raw_spectrogram(spectrogram_data, spectral_analysis_params)
-        
-        # Classify spectrogram phases
-        Q_phases, spectral_metrics = classify_spectrogram_phases(spectrogram_data_filt, spectral_analysis_params)
-
-        # Plot spectrograms and metrics
-        plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data_filt, Q_phases, spectral_metrics, spectral_analysis_params, spectrogram_title)
-    
-
-    print (f'\nFinished computing and saving spectrograms.')
-
-
 def compute_and_save_spectrogram_perROI_for_idealGeom(
         case_name: str,
         output_folder_files: Path,
@@ -1385,9 +1067,22 @@ def main():
         "SPL_db_max": args.power_SPL_db_max}
 
     # Load mesh
-    mesh_file = list(Path(mesh_folder).glob('*.h5'))[0]
-    surf_mesh    = load_surface_mesh(mesh_file)
-    vol_mesh, _  = load_volume_mesh(mesh_file)
+    if args.geometry_type == "idealized":
+        h5_files     = list(Path(mesh_folder).glob('*.h5'))
+        xml_gz_files = list(Path(mesh_folder).glob('*.xml.gz'))
+        if h5_files:
+            mesh_file = h5_files[0]
+            surf_mesh = load_surface_mesh(mesh_file)
+        elif xml_gz_files:
+            mesh_file = xml_gz_files[0]
+            surf_mesh = load_surface_mesh_from_xmlgz(str(mesh_file))
+        else:
+            raise FileNotFoundError(f"No .h5 or .xml.gz mesh file found in {mesh_folder}")
+        vol_mesh = None
+    else:
+        mesh_file    = list(Path(mesh_folder).glob('*.h5'))[0]
+        surf_mesh    = load_surface_mesh(mesh_file)
+        vol_mesh, _  = load_volume_mesh(mesh_file)
 
     # Printing info to log
     print("=" * 200 + "\n")
