@@ -123,14 +123,16 @@ def extract_timestep_from_h5_filename(h5_file: Path) -> int:
     return int(match.group(1))
 
 
-def extract_sim_params_from_h5_filename(h5_file: Path) -> tuple[float, int]:
-    """Parse timesteps-per-cycle from a snapshot filename.
+def extract_sim_params_from_h5_filename(h5_file: Path) -> tuple[int, int | None]:
+    """Parse timesteps-per-cycle and save frequency from a snapshot filename.
 
     Expected patterns:
-      '_ts<int>'   — timesteps per cycle             (e.g. '_ts500_')
+      '_ts<int>'         — timesteps per cycle  (e.g. '_ts500_')
+      'saveFreq(<int>)'  — save frequency       (e.g. 'saveFreq(10)')
 
     Returns:
-    timesteps_per_cyc : int
+      timesteps_per_cyc : int
+      save_freq         : int or None (None if pattern absent)
     """
     stem = h5_file.stem
 
@@ -140,10 +142,12 @@ def extract_sim_params_from_h5_filename(h5_file: Path) -> tuple[float, int]:
             f"Filename '{h5_file.name}' has no '_ts<int>' pattern. "
             "Supply --timesteps_per_cyc on the CLI instead."
         )
-
     timesteps_per_cyc = int(match_ts.group(1))
 
-    return timesteps_per_cyc
+    match_sf = re.search(r'saveFreq\((\d+)\)', stem)
+    save_freq = int(match_sf.group(1)) if match_sf else None
+
+    return timesteps_per_cyc, save_freq
 
 
 # ---------------------------------------- Mesh Utilities -----------------------------------------------------
@@ -895,6 +899,7 @@ def compute_and_save_spectrogram_perROI_for_idealGeom(
         pipe_axis: int,
         period_seconds: float,
         timesteps_per_cyc: int,
+        save_freq: int,
         STFT_params: dict,
         spectral_analysis_params: dict):
     """
@@ -905,7 +910,7 @@ def compute_and_save_spectrogram_perROI_for_idealGeom(
     """
 
     STFT_params = dict(STFT_params)  # avoid mutating caller's dict
-    STFT_params["sampling_rate"] = timesteps_per_cyc / period_seconds
+    STFT_params["sampling_rate"] = timesteps_per_cyc / period_seconds / save_freq
     window_length = STFT_params.get("window_length")
 
     axis_label  = {0: "X", 1: "Y", 2: "Z"}.get(pipe_axis, str(pipe_axis))
@@ -960,7 +965,8 @@ def parse_args():
 
     ap.add_argument("--density",           type=float,  default=1057,   help="Blood density [kg/m3] (default: 1057)")
     ap.add_argument("--period_seconds",    type=float,  default=1,  help="Period in seconds")
-    ap.add_argument("--timesteps_per_cyc", type=int,                    help="Number of timesteps per cycle")
+    ap.add_argument("--timesteps_per_cyc", type=int,   default=None,    help="Number of timesteps per cycle (parsed from filename '_ts<int>' if omitted)")
+    ap.add_argument("--save_freq",         type=int,   default=None,    help="Snapshot save frequency: every Nth timestep saved (parsed from filename 'saveFreq(<int>)' if omitted)")
     ap.add_argument("--spec_quantity",     type=str,    required=True,  choices=["wallpressure","velocity","qcriterion"], help="Quantity of interest used for spectrogram")
     ap.add_argument("--spec_regions_csv",  type=str,    default=None,   help="CSV defining anatomical regions. idealized: columns x_start_D, x_end_D, region_shortname, flag_save_ROI. patient_specific: columns ROI_start_center_id, ROI_end_center_id, ROI_stride, ROI_radius.")   
 
@@ -1150,11 +1156,19 @@ def main():
             
     # Obtain simulation temporal parameters from filename (if not given as input argument)
     timesteps_per_cyc = args.timesteps_per_cyc
+    save_freq         = args.save_freq
     period_seconds    = args.period_seconds
 
-    if timesteps_per_cyc is None:
-        timesteps_per_cyc = extract_sim_params_from_h5_filename(CFD_h5_files[0])
-        print(f"Found timesteps_per_cycle = {timesteps_per_cyc} from CFD results HDF5 file names. \n")
+    if timesteps_per_cyc is None or save_freq is None:
+        ts_parsed, sf_parsed = extract_sim_params_from_h5_filename(CFD_h5_files[0])
+        if timesteps_per_cyc is None:
+            timesteps_per_cyc = ts_parsed
+            print(f"[info] timesteps_per_cycle = {timesteps_per_cyc}  (parsed from filename)")
+        if save_freq is None:
+            if sf_parsed is None:
+                raise ValueError("Could not find 'saveFreq(<int>)' in filename and --save_freq was not supplied.")
+            save_freq = sf_parsed
+            print(f"[info] save_freq           = {save_freq}  (parsed from filename)")
 
 
     # Run post-processing of assembled CFD results
@@ -1181,6 +1195,7 @@ def main():
                 pipe_axis                = args.pipe_axis,
                 period_seconds           = period_seconds,
                 timesteps_per_cyc        = timesteps_per_cyc,
+                save_freq                = save_freq,
                 STFT_params              = short_time_fourier_params,
                 spectral_analysis_params = spectral_analysis_params)
 
