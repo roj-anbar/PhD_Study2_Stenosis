@@ -37,7 +37,7 @@ CASE=eccStenosis                                                            # Ca
 BASE_DIR=$SCRATCH/My_Projects/Study2_stenosis/cases/$CASE/modelOwais        # Parent directory of the case
 MESH_FOLDER="$BASE_DIR/step1_CFD/data"                                      # Path to mesh data folder containing the h5 mesh
 #CENTERLINE="$MESH_FOLDER/${CASE}_centerline_points.csv"                    # Path to centerline csv file used to construct ROIs
-INPUT="$BASE_DIR/step1_CFD/results/${CASE}_clean_ts12000_cy6_saveFreq60"    # Path to CFD results folder containing timeseries HDF5 files
+INPUT="$BASE_DIR/step1_CFD/results/${CASE}_clean_ts12000_cy6_saveFreq1"    # Path to CFD results folder containing timeseries HDF5 files
 OUTPUT="$BASE_DIR/step2_PostProcess"                                        # Path to saving spectrogram files
 SPECTROGRAM_REGIONS="$OUTPUT/configs/${CASE}_spectrogram_regions.csv"       # Path to spectrogram regions csv file used to generate regional specs
 
@@ -114,14 +114,14 @@ python "$SCRIPT" \
 
 python compute_Spectrogram_idealGeom.py \
     --case_name             "eccStenosis" \
-    --input_folder          "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/results/eccStenosis_noisy_ts12000_cy6_saveFreq60" \
+    --input_folder          "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/results/eccStenosis_clean_ts12000_cy6_saveFreq1" \
     --mesh_folder           "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/data" \
     --output_folder         "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess" \
     --spec_regions_csv      "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess/configs/eccStenosis_spectrogram_regions.csv" \
     --spec_quantity         "wallpressure" \
-    --window_length         200 \
+    --window_length         2732 \
     --geometry_type         "idealized" \
-    --pipe_diameter         6.57
+    --pipe_diameter         6.35
 
 wait
 

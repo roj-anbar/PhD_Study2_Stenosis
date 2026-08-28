@@ -448,6 +448,21 @@ def read_spec_regions_from_csv_idealGeom(csv_path: str) -> list:
 
 
 
+def estimate_pipe_diameter_from_mesh(surf_mesh: pv.PolyData, pipe_axis: int = 0) -> float:
+    """
+    Estimate the inner pipe diameter from the wall mesh bounding box.
+
+    For a straight cylindrical pipe the two axes perpendicular to pipe_axis
+    each span exactly one diameter; this returns their average extent.
+    """
+    perp_axes = [i for i in range(3) if i != pipe_axis]
+    extents   = [surf_mesh.points[:, ax].ptp() for ax in perp_axes]
+    diameter  = float(np.mean(extents))
+    axis_label = {0: "X", 1: "Y", 2: "Z"}.get(pipe_axis, str(pipe_axis))
+    print(f"[mesh] Estimated pipe diameter from mesh bounding box: {diameter:.4f}  (pipe_axis={axis_label})")
+    return diameter
+
+
 def extract_wall_points_perROI_idealGeom(surf_mesh: pv.PolyData, x_lo: float, x_hi: float, pipe_axis: int = 0) -> np.ndarray:
     """
     Return indices of wall surface points whose coordinate along `axis` falls in [x_lo, x_hi].
@@ -592,17 +607,19 @@ def filter_raw_spectrogram(spectrogram_data, spectral_analysis_params):
     """
 
     # Unpack parameters
-    cutoff_db = spectral_analysis_params.get("cutoff_db")
-    freq_max  = spectral_analysis_params.get("freq_max")
-    Q_min     = spectral_analysis_params.get("Q_min")
-    Q_max     = spectral_analysis_params.get("Q_max")
+    cutoff_db   = spectral_analysis_params.get("cutoff_db")
+    freq_max    = spectral_analysis_params.get("freq_max")
+    Q_min       = spectral_analysis_params.get("Q_min")
+    Q_max       = spectral_analysis_params.get("Q_max")
+    ramp_slope  = spectral_analysis_params.get("ramp_slope")
+    ramp_offset = spectral_analysis_params.get("ramp_offset")
 
     freqs        = spectrogram_data['freqs']
     bins         = spectrogram_data['bins']
     power_avg_dB = spectrogram_data['power_avg_dB']
 
     # Build masks
-    bins_Q    = 2 * bins                           # Q_inlet = 2*t  (ramp-specific conversion)
+    bins_Q    = ramp_slope * bins + ramp_offset    # Q_inlet = ramp_slope * t + ramp_offset
     mask_Q    = (bins_Q >= Q_min) & (bins_Q <= Q_max)
     mask_freq = freqs <= freq_max
     
@@ -707,16 +724,17 @@ def classify_spectrogram_phases(spectrogram_data, spectral_analysis_params):
     """
 
     # Unpack parameters
-    f_low  = spectral_analysis_params.get("freq_low")
-    f_mid  = spectral_analysis_params.get("freq_mid")
-    f_max  = spectral_analysis_params.get("freq_max")
-
+    f_low       = spectral_analysis_params.get("freq_low")
+    f_mid       = spectral_analysis_params.get("freq_mid")
+    f_max       = spectral_analysis_params.get("freq_max")
+    ramp_slope  = spectral_analysis_params.get("ramp_slope")
+    ramp_offset = spectral_analysis_params.get("ramp_offset")
 
     bins    = spectrogram_data['bins']
     freqs   = spectrogram_data['freqs']
     spec_dB = spectrogram_data['power_avg_dB']
 
-    bins_Q = 2*bins            # for ramp Q = 2t
+    bins_Q = ramp_slope * bins + ramp_offset
     n_cols = spec_dB.shape[1]  # total number of columns of spectrogram (#times)
 
     # Initialize arrays
@@ -778,9 +796,7 @@ def plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data
     freqs = spectrogram_data['freqs']
     spectrogram_signal = spectrogram_data['power_avg_dB']
 
-    # JUST FOR PT_RAMP:
-    # Create bins to show Q_inlet (instead of time) --> specify based on the ramp slope
-    bins_Q = 2*bins # Q_in = 2*t
+    bins_Q = analysis_params.get("ramp_slope") * bins + analysis_params.get("ramp_offset")
 
     # Setting plot properties
     font_size = 20
@@ -801,11 +817,11 @@ def plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data
     # ------------------------ Subplot 0: Spectrogram ----------------------------
     spectrogram = ax[0].pcolormesh(bins_Q, freqs, spectrogram_signal, shading='gouraud', cmap='inferno')
     # Set the limit for power colormap
-    #spectrogram.set_clim(analysis_params['SPL_db_min'], analysis_params['SPL_db_max'])
+    spectrogram.set_clim(analysis_params['SPL_db_min'], analysis_params['SPL_db_max'])
 
 
     ax[0].set_ylabel('Frequency (Hz)',   fontweight='bold', fontsize=font_size, labelpad=10)
-    #ax[0].set_ylim([0, 5000]) #analysis_params['freq_max']])
+    ax[0].set_ylim([0, 2000]) #analysis_params['freq_max']])
 
     # Adding the colorbar
     cbar = fig.colorbar(spectrogram, ax=ax[0], orientation='vertical') #pad=0.5
@@ -832,7 +848,7 @@ def plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data
     # for a in ax:
     #     a.set_xlim([analysis_params['Q_min'], analysis_params['Q_cut']])
     #     a.tick_params(direction='in')
-        #a.set_xlabel('Flow rate (mL/s)', fontweight='bold', labelpad=10)
+    #     a.set_xlabel('Flow rate (mL/s)', fontweight='bold', labelpad=10)
     ax[2].set_xlabel('Flow rate (mL/s)', fontweight='bold', fontsize=font_size, labelpad=10)
 
     #--------- Adding phase lines 
@@ -889,7 +905,7 @@ def compute_and_save_spectrogram_perROI_for_idealGeom(
     """
 
     STFT_params = dict(STFT_params)  # avoid mutating caller's dict
-    STFT_params["sampling_rate"] = timesteps_per_cyc / period_seconds / 100
+    STFT_params["sampling_rate"] = timesteps_per_cyc / period_seconds
     window_length = STFT_params.get("window_length")
 
     axis_label  = {0: "X", 1: "Y", 2: "Z"}.get(pipe_axis, str(pipe_axis))
@@ -954,7 +970,7 @@ def parse_args():
                          "'patient_specific': real geometry, regions defined by centerline ROI CSV.")
 
     # Idealized-geometry parameters (used when --geometry_type idealized)
-    ap.add_argument("--pipe_diameter",      type=float, default=None, help="Pipe inner diameter [mesh units]. Required for --geometry_type idealized.")
+    ap.add_argument("--pipe_diameter",      type=float, default=None, help="Pipe inner diameter [mesh units]. If omitted with --geometry_type idealized, estimated from the mesh bounding box.")
     ap.add_argument("--pipe_axis",          type=int,   default=0,   choices=[0, 1, 2], help="Axis along which the pipe centerline runs: 0=X, 1=Y, 2=Z (default: 0)")
 
     # Patient-specific ROI parameters: either a single center OR a CSV of centers
@@ -992,6 +1008,8 @@ def parse_args():
     ap.add_argument("--flowrate_cut",       type=float, default=8.0,      help="Upper inlet flowrate limit for figures in mL/s (default: 8.0)")
     ap.add_argument("--power_SPL_db_min",   type=float, default=20.0,     help="Lower SPL power limit for spectrogram colormap in dB (default: 20)")
     ap.add_argument("--power_SPL_db_max",   type=float, default=120.0,    help="Upper SPL power limit for spectrogram colormap in dB (default: 120)")
+    ap.add_argument("--ramp_slope",         type=float, default=2.0,      help="Slope of the flow-rate ramp [mL/s]: Q = ramp_slope * t + ramp_offset (default: 2.0)")
+    ap.add_argument("--ramp_offset",        type=float, default=2.0,      help="Offset of the flow-rate ramp [mL/s2]: Q = ramp_slope * t + ramp_offset (default: 2.0)")
 
     return ap.parse_args()
 
@@ -1001,8 +1019,6 @@ def main():
 
     # Validate geometry-type-specific required arguments
     if args.geometry_type == "idealized":
-        if args.pipe_diameter is None:
-            raise ValueError("--pipe_diameter is required when --geometry_type idealized.")
         if args.spec_regions_csv is None:
             raise ValueError("--spec_regions_csv is required when --geometry_type idealized.")
     elif args.geometry_type == "patient_specific":
@@ -1047,15 +1063,17 @@ def main():
         "detrend": args.detrend}
     
     spectral_analysis_params = {
-        "cutoff_db":  args.cutoff_db,
-        "freq_low":   args.freq_low,
-        "freq_mid":   args.freq_mid,
-        "freq_max":   args.freq_max,
-        "Q_min":      args.flowrate_min,
-        "Q_max":      args.flowrate_max,
-        "Q_cut":      args.flowrate_cut,
-        "SPL_db_min": args.power_SPL_db_min,
-        "SPL_db_max": args.power_SPL_db_max}
+        "cutoff_db":   args.cutoff_db,
+        "freq_low":    args.freq_low,
+        "freq_mid":    args.freq_mid,
+        "freq_max":    args.freq_max,
+        "Q_min":       args.flowrate_min,
+        "Q_max":       args.flowrate_max,
+        "Q_cut":       args.flowrate_cut,
+        "SPL_db_min":  args.power_SPL_db_min,
+        "SPL_db_max":  args.power_SPL_db_max,
+        "ramp_slope":  args.ramp_slope,
+        "ramp_offset": args.ramp_offset}
 
     # Load mesh
     if args.geometry_type == "idealized":
@@ -1070,6 +1088,9 @@ def main():
         else:
             raise FileNotFoundError(f"No .h5 or .xml.gz mesh file found in {mesh_folder}")
         vol_mesh = None
+        if args.pipe_diameter is None:
+            print('Pipe diameter not defined by user ...')
+            args.pipe_diameter = estimate_pipe_diameter_from_mesh(surf_mesh, args.pipe_axis)
     else:
         mesh_file    = list(Path(mesh_folder).glob('*.h5'))[0]
         surf_mesh    = load_surface_mesh(mesh_file)
