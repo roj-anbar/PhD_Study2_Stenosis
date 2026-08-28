@@ -27,9 +27,6 @@
 #           --mesh_folder        <path_to_case_mesh_data>     \
 #           --output_folder      <path_to_output_folder>      \
 #           --case_name          PTSeg028_base_0p64           \
-#           --ROI_center_csv     <path_to_centerline_CSV_file>       \
-#           --ROI_radius         4.0                          \
-#
 #
 # INPUTS:
 #   - input_folder        Path to results directory with HDF5 snapshots
@@ -40,12 +37,7 @@
 #   --timesteps_per_cyc   Timesteps per cycle (if omitted, try to parse from filenames with '_ts<int>')
 #   --density             Blood density [kg/m3] (default = 1050 kg/m3)
 #   --spec_quantity       Quantity to compute spectrogram from: ['wallpressure', 'velocity', 'qcriterion']
-#   --ROI_type            (default = 'cylinder')
-#   --ROI_center_coord    X Y Z center of spherical ROI (mesh units).
-#   --ROI_center_csv      Path to CSV file containing the coordinates of multiple points for ROI center.
-#   --ROI_radius          Sphere radius (mesh units). If 0, treat ROI_center as the **point ID** to sample.
 #   --flag_save_ROI       Flag to save the ROI.vtp surface file (If it's included in args then it's True if not it's False)
-#   --flag_multi_ROI      Flag to compute spectrogram in a segment based on multiple ROIs (If it's included in args then it's True if not it's False)
 #   --window_length       STFT window length (samples, i.e., snapshots)
 #   --n_fft               STFT FFT length (bins)
 #   --overlap_frac        STFT noverlap = overlap_frac * window_length --> Overlap fraction between consequent windows (0-1)
@@ -144,7 +136,7 @@ def extract_sim_params_from_foldername(input_path: Path) -> tuple[int, int | Non
         )
     timesteps_per_cyc = int(match_ts.group(1))
 
-    match_sf = re.search(r'saveFreq\((\d+)\)', path_str)
+    match_sf = re.search(r'_saveFreq(\d+)', path_str)
     save_freq = int(match_sf.group(1)) if match_sf else None
 
     return timesteps_per_cyc, save_freq
@@ -597,7 +589,7 @@ def filter_raw_spectrogram(spectrogram_data, spectral_analysis_params):
     Filter and trim the raw spectrogram data to the analysis window.
     Three operations are applied:
         1. Frequency axis : keep only rows where freqs <= freq_max.
-        2. Q axis         : keep only columns where Q_inlet = 2*bins falls in [Q_min, Q_max].
+        2. Q axis         : keep only columns where Q_inlet = ramp_slope*t+ramp_offset falls in [Q_min, Q_max].
         3. dB floor       : clamp any power values below cutoff_db up to cutoff_db.
 
     Parameters
@@ -800,7 +792,7 @@ def plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data
     freqs = spectrogram_data['freqs']
     spectrogram_signal = spectrogram_data['power_avg_dB']
 
-    bins_Q = bins #analysis_params.get("ramp_slope") * bins + analysis_params.get("ramp_offset")
+    bins_Q = analysis_params.get("ramp_slope") * bins + analysis_params.get("ramp_offset")
 
     # Setting plot properties
     font_size = 20
@@ -843,9 +835,8 @@ def plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data
 
     # ------------------------ Subplot 2: Spectral Centroid ----------------------------
     ax[2].plot(bins_Q, spectral_metrics['centroid_freq'], linewidth = 4, color='black')
-    ax[2].set_ylim([-1, 300])
+    ax[2].set_ylim([-1, 500])
     ax[2].set_ylabel('Spectral Centroid (Hz)', fontweight='bold', fontsize=font_size, labelpad=10)
-
 
 
     #------- Common x-axis settings
@@ -979,21 +970,6 @@ def parse_args():
     ap.add_argument("--pipe_diameter",      type=float, default=None, help="Pipe inner diameter [mesh units]. If omitted with --geometry_type idealized, estimated from the mesh bounding box.")
     ap.add_argument("--pipe_axis",          type=int,   default=0,   choices=[0, 1, 2], help="Axis along which the pipe centerline runs: 0=X, 1=Y, 2=Z (default: 0)")
 
-    # Patient-specific ROI parameters: either a single center OR a CSV of centers
-    ROI_group = ap.add_mutually_exclusive_group(required=False)
-    ROI_group.add_argument("--ROI_center_coord", nargs=3,  type=float, metavar=("X", "Y", "Z"), help="XYZ coordinates for a single ROI center (mesh units)")
-    ROI_group.add_argument("--ROI_center_csv",   type=str,   help="CSV file with multiple ROI points; coords columns = Points:0/1/2")
-    
-    ap.add_argument("--ROI_type",                type=str,   default="cylinder", choices=["point","sphere","cylinder"], help="Type of ROI shape")
-    ap.add_argument("--ROI_radius",              type=float, default=None,       help="Radius of ROI in mesh units (mm in most cases). Required unless --spec_regions_csv is used.")
-    ap.add_argument("--ROI_height",              type=float, default=2,          help="Height of cylindrical ROI in mesh units (mm in most cases)")
-    ap.add_argument("--ROI_start_center_id",     type=int,   default=1,          help="ROI center ID of the start of the region of inerest")
-    ap.add_argument("--ROI_end_center_id",       type=int,   default=10,         help="ROI center ID of the end of the region of inerest")
-    ap.add_argument("--ROI_stride",              type=int,   default=1,          help="Stride between ROIs to sweep the region of inerest")
-    ap.add_argument("--flag_save_ROI",           action="store_true",            help="Flag to save ROI.vtp surface file")
-    ap.add_argument("--flag_multi_ROI",          action="store_true",            help="Flag to compute spectrogram in a segment based on multiple ROIs")
-
-
 
     # Spectrogram specific parameters (including Short-time Fourier Transform control)
     ap.add_argument("--window_length",    type=int,   default=None,     help="Length of FFT window in samples (number of snapshots for each window)")
@@ -1024,12 +1000,8 @@ def main():
     args          = parse_args()
 
     # Validate geometry-type-specific required arguments
-    if args.geometry_type == "idealized":
-        if args.spec_regions_csv is None:
-            raise ValueError("--spec_regions_csv is required when --geometry_type idealized.")
-    elif args.geometry_type == "patient_specific":
-        if args.ROI_center_coord is None and args.ROI_center_csv is None:
-            raise ValueError("--ROI_center_coord or --ROI_center_csv is required when --geometry_type patient_specific.")
+    if args.spec_regions_csv is None:
+        raise ValueError("--spec_regions_csv is required when --geometry_type idealized.")
 
     input_folder  = Path(args.input_folder)
     mesh_folder   = Path(args.mesh_folder)
@@ -1039,27 +1011,14 @@ def main():
     if not Path(output_folder).exists():
         Path(output_folder).mkdir(parents=True, exist_ok=True)
 
-    output_folder_files = Path(f"{output_folder}/window{args.window_length}_overlap{args.overlap_fraction}_ROI{args.ROI_type}_multiROI{args.flag_multi_ROI}/files")
-    output_folder_imgs  = Path(f"{output_folder}/window{args.window_length}_overlap{args.overlap_fraction}_ROI{args.ROI_type}_multiROI{args.flag_multi_ROI}/imgs")
-    output_folder_ROIs  = Path(f"{output_folder}/window{args.window_length}_overlap{args.overlap_fraction}_ROI{args.ROI_type}_multiROI{args.flag_multi_ROI}/ROIs")
+    output_folder_files = Path(f"{output_folder}/window{args.window_length}_overlap{args.overlap_fraction}/files")
+    output_folder_imgs  = Path(f"{output_folder}/window{args.window_length}_overlap{args.overlap_fraction}/imgs")
+    output_folder_ROIs  = Path(f"{output_folder}/window{args.window_length}_overlap{args.overlap_fraction}/ROIs")
     
     output_folder_files.mkdir(parents=True, exist_ok=True)
     output_folder_imgs.mkdir(parents=True, exist_ok=True)
-    if args.flag_save_ROI: output_folder_ROIs.mkdir(parents=True, exist_ok=True)
 
     # Put input arguments into dictionaries
-    ROI_params = {
-        "ROI_type": args.ROI_type,
-        "ROI_center_coord": args.ROI_center_coord,
-        "ROI_center_csv": args.ROI_center_csv,
-        "ROI_radius": args.ROI_radius,
-        "ROI_height": args.ROI_height,
-        "ROI_start_center_id": args.ROI_start_center_id,
-        "ROI_end_center_id": args.ROI_end_center_id,
-        "ROI_stride": args.ROI_stride,
-        "flag_save_ROI": args.flag_save_ROI,
-        "flag_multi_ROI": args.flag_multi_ROI}
-
     short_time_fourier_params = {
         "window_length": args.window_length,
         "n_fft": args.n_fft,
@@ -1112,16 +1071,11 @@ def main():
     if args.spec_regions_csv is not None:
         print(f"[info] Read spectrogram regions from:  {args.spec_regions_csv}")
 
-    if args.geometry_type == "idealized":
-        print(f"[info] spec_regions_csv:               {args.spec_regions_csv}")
-        print(f"[info] pipe_diameter:                  {args.pipe_diameter}")
-        print(f"[info] pipe_axis:                      {args.pipe_axis} \n")
-    else:
-        if args.ROI_center_csv is not None:
-            print(f"[info] Read ROI centers from:      {args.ROI_center_csv} \n")
-        else:
-            print(f"[info] Read ROI center from:       {args.ROI_center_coord} \n")
-    
+    print(f"[info] spec_regions_csv:               {args.spec_regions_csv}")
+    print(f"[info] pipe_diameter:                  {args.pipe_diameter}")
+    print(f"[info] pipe_axis:                      {args.pipe_axis} \n")
+
+
     print("=" * 200 + "\n")
 
     
@@ -1175,62 +1129,33 @@ def main():
     print (f"Performing post-processing computation on {args.n_process} cores ... \n" )
 
     # ---- Idealized geometry: x-range region slicing ----
-    if args.geometry_type == "idealized":
-        spec_regions = read_spec_regions_from_csv_idealGeom(args.spec_regions_csv)
+    spec_regions = read_spec_regions_from_csv_idealGeom(args.spec_regions_csv)
 
-        axis_label = {0: "X", 1: "Y", 2: "Z"}.get(args.pipe_axis, str(args.pipe_axis))
-        print(f"pipe_diameter D = {args.pipe_diameter}  |  pipe_axis = {axis_label}\n")
+    axis_label = {0: "X", 1: "Y", 2: "Z"}.get(args.pipe_axis, str(args.pipe_axis))
+    print(f"pipe_diameter D = {args.pipe_diameter}  |  pipe_axis = {axis_label}\n")
 
-        for region_idx, region in enumerate(spec_regions):
-            print(f"\n--- Region {region_idx + 1}/{len(spec_regions)}: '{region.get('region_shortname', f'region{region_idx}')}' ---")
-            compute_and_save_spectrogram_perROI_for_idealGeom(
-                case_name                = args.case_name,
-                output_folder_files      = output_folder_files,
-                output_folder_imgs       = output_folder_imgs,
-                output_folder_ROIs       = output_folder_ROIs,
-                surf_mesh                = surf_mesh,
-                wall_pressure            = spec_quantity_array,
-                spec_region              = region,
-                pipe_diameter            = args.pipe_diameter,
-                pipe_axis                = args.pipe_axis,
-                period_seconds           = period_seconds,
-                timesteps_per_cyc        = timesteps_per_cyc,
-                save_freq                = save_freq,
-                STFT_params              = short_time_fourier_params,
-                spectral_analysis_params = spectral_analysis_params)
+    for region_idx, region in enumerate(spec_regions):
+        print(f"\n--- Region {region_idx + 1}/{len(spec_regions)}: '{region.get('region_shortname', f'region{region_idx}')}' ---")
+        compute_and_save_spectrogram_perROI_for_idealGeom(
+            case_name                = args.case_name,
+            output_folder_files      = output_folder_files,
+            output_folder_imgs       = output_folder_imgs,
+            output_folder_ROIs       = output_folder_ROIs,
+            surf_mesh                = surf_mesh,
+            wall_pressure            = spec_quantity_array,
+            spec_region              = region,
+            pipe_diameter            = args.pipe_diameter,
+            pipe_axis                = args.pipe_axis,
+            period_seconds           = period_seconds,
+            timesteps_per_cyc        = timesteps_per_cyc,
+            save_freq                = save_freq,
+            STFT_params              = short_time_fourier_params,
+            spectral_analysis_params = spectral_analysis_params)
 
         print(f"\nFinished computing spectrograms for all idealized regions.")
 
-    # ---- Patient-specific geometry: centerline ROI sweeping ----
-    else:
-        if args.spec_regions_csv is not None:
-            spec_regions = read_spec_regions_from_csv_patientGeom(args.spec_regions_csv)
-        else:
-            spec_regions = [{}]   # single region; CLI ROI args used directly
 
-        for region_idx, region_params in enumerate(spec_regions):
-            if len(spec_regions) > 1:
-                print(f"\n---------------------- Region {region_idx + 1}/{len(spec_regions)} --------------------------------")
-                print(f"{region_params['region_fullname']}: ROI {region_params['ROI_start_center_id']} to {region_params['ROI_end_center_id']} \n")
 
-            # Override the CLI ROI params if present in the spec_regions_csv file
-            region_ROI_params = dict(ROI_params)
-            region_ROI_params.update(region_params)
-
-            compute_and_save_spectrogram_perROI_for_patientGeom(
-                                case_name                = args.case_name,
-                                output_folder_files      = output_folder_files,
-                                output_folder_imgs       = output_folder_imgs,
-                                output_folder_ROIs       = output_folder_ROIs,
-                                surf_mesh                = surf_mesh,
-                                vol_mesh                 = vol_mesh,
-                                spec_quantity            = args.spec_quantity,
-                                spec_quantity_array      = spec_quantity_array,
-                                period_seconds           = period_seconds,
-                                timesteps_per_cyc        = timesteps_per_cyc,
-                                ROI_params               = region_ROI_params,
-                                STFT_params              = short_time_fourier_params,
-                                spectral_analysis_params = spectral_analysis_params)
 
 if __name__ == '__main__':
     main()

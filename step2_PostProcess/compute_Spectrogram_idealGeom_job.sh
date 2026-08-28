@@ -122,7 +122,9 @@ python compute_Spectrogram_idealGeom.py \
     --window_length         1000 \
     --geometry_type         "idealized" \
     --pipe_diameter         6.35 \
-    --power_SPL_db_min      0
+    --power_SPL_db_min      0     \
+    --flowrate_max          13.5 \
+    --flowrate_cut          13.5 
 
 wait
 
