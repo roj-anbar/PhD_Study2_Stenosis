@@ -119,9 +119,10 @@ python compute_Spectrogram_idealGeom.py \
     --output_folder         "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess" \
     --spec_regions_csv      "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess/configs/eccStenosis_spectrogram_regions.csv" \
     --spec_quantity         "wallpressure" \
-    --window_length         2732 \
+    --window_length         1000 \
     --geometry_type         "idealized" \
-    --pipe_diameter         6.35
+    --pipe_diameter         6.35 \
+    --power_SPL_db_min      0
 
 wait
 

@@ -123,28 +123,28 @@ def extract_timestep_from_h5_filename(h5_file: Path) -> int:
     return int(match.group(1))
 
 
-def extract_sim_params_from_h5_filename(h5_file: Path) -> tuple[int, int | None]:
-    """Parse timesteps-per-cycle and save frequency from a snapshot filename.
+def extract_sim_params_from_foldername(input_path: Path) -> tuple[int, int | None]:
+    """Parse timesteps-per-cycle and save frequency from the results folder path.
 
-    Expected patterns:
-      '_ts<int>'         — timesteps per cycle  (e.g. '_ts500_')
-      'saveFreq(<int>)'  — save frequency       (e.g. 'saveFreq(10)')
+    Expected patterns (anywhere in the full path string):
+      '_ts<int>'        — timesteps per cycle  (e.g. 'run_ts500_...')
+      'saveFreq(<int>)' — save frequency       (e.g. 'run_saveFreq(10)')
 
     Returns:
       timesteps_per_cyc : int
       save_freq         : int or None (None if pattern absent)
     """
-    stem = h5_file.stem
+    path_str = str(input_path)
 
-    match_ts = re.search(r'_ts(\d+)', stem)
+    match_ts = re.search(r'_ts(\d+)', path_str)
     if match_ts is None:
         raise ValueError(
-            f"Filename '{h5_file.name}' has no '_ts<int>' pattern. "
+            f"Folder path '{input_path}' has no '_ts<int>' pattern. "
             "Supply --timesteps_per_cyc on the CLI instead."
         )
     timesteps_per_cyc = int(match_ts.group(1))
 
-    match_sf = re.search(r'saveFreq\((\d+)\)', stem)
+    match_sf = re.search(r'saveFreq\((\d+)\)', path_str)
     save_freq = int(match_sf.group(1)) if match_sf else None
 
     return timesteps_per_cyc, save_freq
@@ -800,7 +800,7 @@ def plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data
     freqs = spectrogram_data['freqs']
     spectrogram_signal = spectrogram_data['power_avg_dB']
 
-    bins_Q = analysis_params.get("ramp_slope") * bins + analysis_params.get("ramp_offset")
+    bins_Q = bins #analysis_params.get("ramp_slope") * bins + analysis_params.get("ramp_offset")
 
     # Setting plot properties
     font_size = 20
@@ -1160,15 +1160,15 @@ def main():
     period_seconds    = args.period_seconds
 
     if timesteps_per_cyc is None or save_freq is None:
-        ts_parsed, sf_parsed = extract_sim_params_from_h5_filename(CFD_h5_files[0])
+        ts_parsed, sf_parsed = extract_sim_params_from_foldername(input_path)
         if timesteps_per_cyc is None:
             timesteps_per_cyc = ts_parsed
-            print(f"[info] timesteps_per_cycle = {timesteps_per_cyc}  (parsed from filename)")
+            print(f"[info] timesteps_per_cycle = {timesteps_per_cyc}  (parsed from folder name)")
         if save_freq is None:
             if sf_parsed is None:
-                raise ValueError("Could not find 'saveFreq(<int>)' in filename and --save_freq was not supplied.")
+                raise ValueError("Could not find 'saveFreq(<int>)' in folder path and --save_freq was not supplied.")
             save_freq = sf_parsed
-            print(f"[info] save_freq           = {save_freq}  (parsed from filename)")
+            print(f"[info] save_freq           = {save_freq}  (parsed from folder name)")
 
 
     # Run post-processing of assembled CFD results
