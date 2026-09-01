@@ -411,14 +411,14 @@ def read_spec_regions_from_csv_idealGeom(csv_path: str) -> list:
     Read axial (x-range) region definitions for idealized geometries with a known, straight centerline
     (e.g. inlet: -3D to -1D / stenosis: -1D to 1D / post-stenosis: 1D to 6D / outlet: 6D to end).
     Required columns : x_start_D, x_end_D   (bounds in multiples of pipe diameter D)
-    Optional columns : region_shortname, flag_save_ROI
+    Optional columns : region_shortname
     The strings "start"/"end" in x_start_D/x_end_D mean "extend to the mesh's actual min/max x".
     Returns a list of dicts, one per row.
     """
     float_keys = {"x_start_D", "x_end_D"}
-    bool_keys  = {"flag_save_ROI"}
+
     str_keys   = {"region_shortname"}
-    known_keys = float_keys | bool_keys | str_keys
+    known_keys = float_keys | str_keys
 
     data = np.genfromtxt(csv_path, delimiter=",", names=True, dtype=None, encoding="utf-8")
     if data.ndim == 0:
@@ -434,14 +434,11 @@ def read_spec_regions_from_csv_idealGeom(csv_path: str) -> list:
             if key in float_keys:
                 sval = str(val).strip().lower()
                 region[key] = None if sval in ("start", "end", "none", "") else float(sval)
-            elif key in bool_keys:
-                region[key] = bool(int(val)) if str(val).strip().lstrip('-').isdigit() else str(val).strip().lower() in ("true", "yes")
             elif key in str_keys:
                 region[key] = str(val).strip()
         regions.append(region)
 
     return regions
-
 
 
 def estimate_pipe_diameter_from_mesh(surf_mesh: pv.PolyData, pipe_axis: int = 0) -> float:
@@ -455,7 +452,7 @@ def estimate_pipe_diameter_from_mesh(surf_mesh: pv.PolyData, pipe_axis: int = 0)
     extents   = [surf_mesh.points[:, ax].ptp() for ax in perp_axes]
     diameter  = float(np.mean(extents))
     axis_label = {0: "X", 1: "Y", 2: "Z"}.get(pipe_axis, str(pipe_axis))
-    print(f"[mesh] Estimated pipe diameter from mesh bounding box: {diameter:.4f}  (pipe_axis={axis_label})")
+    print(f"[mesh] Pipe diameter not defined by user, estimating from mesh directly: {diameter:.4f}")
     return diameter
 
 
@@ -782,7 +779,7 @@ def classify_spectrogram_phases(spectrogram_data, spectral_analysis_params):
     return Q_phases, spectral_metrics
 
 
-def plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data, Q_phases, spectral_metrics, analysis_params, plot_title, flag_plot_phases=False):
+def plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data, Q_phases, spectral_metrics, analysis_params, plot_title, flag_plot_phases=True):
     """
     Plot and save spectrograms and spectral metrics as PNG files.
     """
@@ -820,8 +817,8 @@ def plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data
     ax[0].set_ylim([0, 2000]) #analysis_params['freq_max']])
 
     # Adding the colorbar
-    cbar = fig.colorbar(spectrogram, ax=ax[0], orientation='vertical') #pad=0.5
-    cbar.set_label('SPL (dB)', rotation=270, labelpad=15, size=16, fontweight='bold')
+    # cbar = fig.colorbar(spectrogram, ax=ax[0], orientation='vertical') #pad=0.5
+    # cbar.set_label('SPL (dB)', rotation=270, labelpad=15, size=16, fontweight='bold')
 
 
     # ------------------------ Subplot 1: Mean power ----------------------------
@@ -840,10 +837,10 @@ def plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data
 
 
     #------- Common x-axis settings
-    # for a in ax:
-    #     a.set_xlim([analysis_params['Q_min'], analysis_params['Q_cut']])
-    #     a.tick_params(direction='in')
-    #     a.set_xlabel('Flow rate (mL/s)', fontweight='bold', labelpad=10)
+    for a in ax:
+        a.set_xlim([analysis_params['Q_min'], analysis_params['Q_cut']])
+        a.tick_params(direction='in')
+        a.set_xlabel('Flow rate (mL/s)', fontweight='bold', labelpad=10)
     ax[2].set_xlabel('Flow rate (mL/s)', fontweight='bold', fontsize=font_size, labelpad=10)
 
     #--------- Adding phase lines 
@@ -892,7 +889,8 @@ def compute_and_save_spectrogram_perROI_for_idealGeom(
         timesteps_per_cyc: int,
         save_freq: int,
         STFT_params: dict,
-        spectral_analysis_params: dict):
+        spectral_analysis_params: dict,
+        flag_save_ROI: bool):
     """
     Compute and save the spectrogram for one axial region of an idealized geometry.
 
@@ -912,7 +910,6 @@ def compute_and_save_spectrogram_perROI_for_idealGeom(
     x_start_D = spec_region.get("x_start_D")
     x_end_D   = spec_region.get("x_end_D")
     shortname = spec_region.get("region_shortname", "region")
-    save_roi  = spec_region.get("flag_save_ROI", False)
 
     x1_region = x_mesh_min if x_start_D is None else x_start_D * pipe_diameter
     x2_region = x_mesh_max if x_end_D   is None else x_end_D   * pipe_diameter
@@ -921,6 +918,13 @@ def compute_and_save_spectrogram_perROI_for_idealGeom(
 
     pids = extract_wall_points_perROI_idealGeom(surf_mesh, x1_region, x2_region, pipe_axis=pipe_axis)
     print(f"    Found {pids.size} wall points.")
+
+    if flag_save_ROI:
+        output_folder_ROIs.mkdir(parents=True, exist_ok=True)
+        roi_mesh = surf_mesh.extract_points(pids)
+        roi_mesh.save(output_folder_ROIs / f"{case_name}_region{shortname}.vtu")
+        print(f"    Saved ROI surface: {case_name}_region{shortname}.vtu")
+
 
 
     wall_pressure_region   = wall_pressure[pids, :]
@@ -959,16 +963,12 @@ def parse_args():
     ap.add_argument("--timesteps_per_cyc", type=int,   default=None,    help="Number of timesteps per cycle (parsed from filename '_ts<int>' if omitted)")
     ap.add_argument("--save_freq",         type=int,   default=None,    help="Snapshot save frequency: every Nth timestep saved (parsed from filename 'saveFreq(<int>)' if omitted)")
     ap.add_argument("--spec_quantity",     type=str,    required=True,  choices=["wallpressure","velocity","qcriterion"], help="Quantity of interest used for spectrogram")
-    ap.add_argument("--spec_regions_csv",  type=str,    default=None,   help="CSV defining anatomical regions. idealized: columns x_start_D, x_end_D, region_shortname, flag_save_ROI. patient_specific: columns ROI_start_center_id, ROI_end_center_id, ROI_stride, ROI_radius.")   
+    ap.add_argument("--spec_regions_csv",  type=str,    default=None,   help="CSV defining anatomical regions. idealized: columns x_start_D, x_end_D, region_shortname.")   
 
-    # Geometry type — controls which region-definition method is used
-    ap.add_argument("--geometry_type", type=str, default="patient_specific", choices=["idealized", "patient_specific"],
-                    help="'idealized': straight pipe, regions defined by x-range in units of D; "
-                         "'patient_specific': real geometry, regions defined by centerline ROI CSV.")
-
-    # Idealized-geometry parameters (used when --geometry_type idealized)
-    ap.add_argument("--pipe_diameter",      type=float, default=None, help="Pipe inner diameter [mesh units]. If omitted with --geometry_type idealized, estimated from the mesh bounding box.")
-    ap.add_argument("--pipe_axis",          type=int,   default=0,   choices=[0, 1, 2], help="Axis along which the pipe centerline runs: 0=X, 1=Y, 2=Z (default: 0)")
+    # Idealized-geometry parameters
+    ap.add_argument("--pipe_diameter",      type=float, default=None, help="Pipe inner diameter [mesh units]. If omitted, estimated from the mesh bounding box.")
+    ap.add_argument("--pipe_axis",          type=int,   default=0,    choices=[0, 1, 2], help="Axis along which the pipe centerline runs: 0=X, 1=Y, 2=Z (default: 0)")
+    ap.add_argument("--flag_save_ROI",      action="store_true",      help="Save each region's wall surface as a .vtp file")
 
 
     # Spectrogram specific parameters (including Short-time Fourier Transform control)
@@ -1001,7 +1001,7 @@ def main():
 
     # Validate geometry-type-specific required arguments
     if args.spec_regions_csv is None:
-        raise ValueError("--spec_regions_csv is required when --geometry_type idealized.")
+        raise ValueError("--spec_regions_csv is required.")
 
     input_folder  = Path(args.input_folder)
     mesh_folder   = Path(args.mesh_folder)
@@ -1041,25 +1041,22 @@ def main():
         "ramp_offset": args.ramp_offset}
 
     # Load mesh
-    if args.geometry_type == "idealized":
-        h5_files     = list(Path(mesh_folder).glob('*.h5'))
-        xml_gz_files = list(Path(mesh_folder).glob('*.xml.gz'))
-        if h5_files:
-            mesh_file = h5_files[0]
-            surf_mesh = load_surface_mesh(mesh_file)
-        elif xml_gz_files:
-            mesh_file = xml_gz_files[0]
-            surf_mesh = load_surface_mesh_from_xmlgz(str(mesh_file))
-        else:
-            raise FileNotFoundError(f"No .h5 or .xml.gz mesh file found in {mesh_folder}")
-        vol_mesh = None
-        if args.pipe_diameter is None:
-            print('Pipe diameter not defined by user ...')
-            args.pipe_diameter = estimate_pipe_diameter_from_mesh(surf_mesh, args.pipe_axis)
+    h5_files     = list(Path(mesh_folder).glob('*.h5'))
+    xml_gz_files = list(Path(mesh_folder).glob('*.xml.gz'))
+    if h5_files:
+        print(f"[mesh] Extracting walls from mesh.h5 file...")
+        mesh_file = h5_files[0]
+        surf_mesh = load_surface_mesh(mesh_file)
+    elif xml_gz_files:
+        print(f"[mesh] Extracting the walls from mesh.xml.gz file (no mesh.h5 file found)...")
+        mesh_file = xml_gz_files[0]
+        surf_mesh = load_surface_mesh_from_xmlgz(str(mesh_file))
     else:
-        mesh_file    = list(Path(mesh_folder).glob('*.h5'))[0]
-        surf_mesh    = load_surface_mesh(mesh_file)
-        vol_mesh, _  = load_volume_mesh(mesh_file)
+        raise FileNotFoundError(f"[mesh] No .h5 or .xml.gz mesh file found in {mesh_folder}")
+    vol_mesh = None
+    if args.pipe_diameter is None:
+        args.pipe_diameter = estimate_pipe_diameter_from_mesh(surf_mesh, args.pipe_axis)
+
 
     # Printing info to log
     print("=" * 200 + "\n")
@@ -1073,7 +1070,7 @@ def main():
 
     print(f"[info] spec_regions_csv:               {args.spec_regions_csv}")
     print(f"[info] pipe_diameter:                  {args.pipe_diameter}")
-    print(f"[info] pipe_axis:                      {args.pipe_axis} \n")
+    #print(f"[info] pipe_axis:                      {args.pipe_axis} \n")
 
 
     print("=" * 200 + "\n")
@@ -1131,8 +1128,8 @@ def main():
     # ---- Idealized geometry: x-range region slicing ----
     spec_regions = read_spec_regions_from_csv_idealGeom(args.spec_regions_csv)
 
-    axis_label = {0: "X", 1: "Y", 2: "Z"}.get(args.pipe_axis, str(args.pipe_axis))
-    print(f"pipe_diameter D = {args.pipe_diameter}  |  pipe_axis = {axis_label}\n")
+    #axis_label = {0: "X", 1: "Y", 2: "Z"}.get(args.pipe_axis, str(args.pipe_axis))
+    #print(f"pipe_diameter D = {args.pipe_diameter}  |  pipe_axis = {axis_label}\n")
 
     for region_idx, region in enumerate(spec_regions):
         print(f"\n--- Region {region_idx + 1}/{len(spec_regions)}: '{region.get('region_shortname', f'region{region_idx}')}' ---")
@@ -1150,7 +1147,8 @@ def main():
             timesteps_per_cyc        = timesteps_per_cyc,
             save_freq                = save_freq,
             STFT_params              = short_time_fourier_params,
-            spectral_analysis_params = spectral_analysis_params)
+            spectral_analysis_params = spectral_analysis_params,
+            flag_save_ROI            = args.flag_save_ROI)
 
         print(f"\nFinished computing spectrograms for all idealized regions.")
 

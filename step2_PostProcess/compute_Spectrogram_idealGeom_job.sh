@@ -34,14 +34,13 @@ echo "Job started: $(date)"
 
 # ---------------------------------- Define Paths -------------------------------------------------------------------------------
 CASE=eccStenosis                                                            # Case name
-BASE_DIR=$SCRATCH/My_Projects/Study2_stenosis/cases/$CASE/modelOwais        # Parent directory of the case
+BASE_DIR=$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais        # Parent directory of the case
 MESH_FOLDER="$BASE_DIR/step1_CFD/data"                                      # Path to mesh data folder containing the h5 mesh
-#CENTERLINE="$MESH_FOLDER/${CASE}_centerline_points.csv"                    # Path to centerline csv file used to construct ROIs
-INPUT="$BASE_DIR/step1_CFD/results/${CASE}_clean_ts12000_cy6_saveFreq1"    # Path to CFD results folder containing timeseries HDF5 files
+INPUT="$BASE_DIR/step1_CFD/results/${CASE}_noisy_ts12000_cy6_saveFreq1"    # Path to CFD results folder containing timeseries HDF5 files
 OUTPUT="$BASE_DIR/step2_PostProcess"                                        # Path to saving spectrogram files
 SPECTROGRAM_REGIONS="$OUTPUT/configs/${CASE}_spectrogram_regions.csv"       # Path to spectrogram regions csv file used to generate regional specs
 
-SCRIPT="/scratch/ranbar/My_Projects/Study2_stenosis/scripts/step2_PostProcess/compute_Spectrogram.py"
+SCRIPT="/scratch/ranbar/My_Projects/Study2_stenosis/scripts/step2_PostProcess/compute_Spectrogram_idealGeom.py"
 
 
 # --------------------------------- Load Modules -------------------------------------------------------------------------------
@@ -78,53 +77,35 @@ python "$SCRIPT" \
     --input_folder          "$INPUT" \
     --mesh_folder           "$MESH_FOLDER" \
     --output_folder         "$OUTPUT" \
-    --ROI_center_csv        "$CENTERLINE" \
     --spec_regions_csv      "$SPECTROGRAM_REGIONS" \
     --spec_quantity         "wallpressure" \
-    --window_length         2732 \
-    --ROI_type              "cylinder" \
-    --flag_multi_ROI        \
-    --flag_save_ROI
-#    --timesteps_per_cyc 10000 
+    --window_length         2000 \
+    --power_SPL_db_min      0     \
+    --flowrate_min          3 \
+    --flowrate_max          13.5 \
+    --flowrate_cut          13.5 \
+    --flag_save_ROI         
 
-
-
-# ------------ For running each ROI separately (no ROI_regions_csv file)
-#python "$SCRIPT" \
-#    --case_name             "$CASE" \
-#    --input_folder          "$INPUT" \
-#    --mesh_folder           "$MESH_FOLDER" \
-#    --output_folder         "$OUTPUT" \
-#    --centerline_csv        "$CENTERLINE" \
-#    --spec_quantity         "wallpressure" \
-#    --window_length         2732 \
-#    --ROI_type              "cylinder" \
-#    --ROI_radius            10 \
-#    --ROI_stride            2 \
-#    --ROI_start_center_id   1108 \
-#    --ROI_end_center_id     1188 \
-#    --flag_multi_ROI        
-#    --flag_save_ROI
-#    --timesteps_per_cyc 10000 
 
 
 #---------------------- For running directly from commandline use below ---------------------------
 # Note1: You HAVE to load the modules first from terminal then run below
 # Note2: You HAVE to comment this part if submitting this file through sbatch
 
-python compute_Spectrogram_idealGeom.py \
-    --case_name             "eccStenosis" \
-    --input_folder          "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/results/eccStenosis_clean_ts12000_cy6_saveFreq1" \
-    --mesh_folder           "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/data" \
-    --output_folder         "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess" \
-    --spec_regions_csv      "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess/configs/eccStenosis_spectrogram_regions.csv" \
-    --spec_quantity         "wallpressure" \
-    --window_length         1000 \
-    --geometry_type         "idealized" \
-    --pipe_diameter         6.35 \
-    --power_SPL_db_min      0     \
-    --flowrate_max          13.5 \
-    --flowrate_cut          13.5 
+# python compute_Spectrogram_idealGeom.py \
+#     --case_name             "eccStenosis" \
+#     --input_folder          "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/results/eccStenosis_clean_ts12000_cy6_saveFreq1" \
+#     --mesh_folder           "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/data" \
+#     --output_folder         "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess" \
+#     --spec_regions_csv      "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess/configs/eccStenosis_spectrogram_regions.csv" \
+#     --spec_quantity         "wallpressure" \
+#     --window_length         2000 \
+#     --power_SPL_db_min      0     \
+#     --flowrate_min          3 \
+#     --flowrate_max          13.5 \
+#     --flowrate_cut          13.5 \
+#     --flag_save_ROI         
 
+#--pipe_diameter         6.35 \
 wait
 
