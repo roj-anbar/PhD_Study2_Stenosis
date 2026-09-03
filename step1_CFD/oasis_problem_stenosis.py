@@ -343,9 +343,15 @@ def problem_parameters(commandline_kwargs, NS_parameters, **NS_namespace):
         #txt += '_Per%d'%int(period)
 
         #case_fullname = ("art_" + mesh_name + txt + "_Newt370" + "_ts" + str(timesteps) + "_cy" + str(cycles) + "_uO" + str(uOrder))
-        noise_y = get_cmdarg(commandline_kwargs, 'noise_y', False)   # add Gaussian noise to the y-component of the inlet velocity
-        noise_z = get_cmdarg(commandline_kwargs, 'noise_z', False)   # add Gaussian noise to the z-component of the inlet velocity
+        noise_y     = get_cmdarg(commandline_kwargs, 'noise_y', False)   # add Gaussian noise to the y-component of the inlet velocity
+        noise_z     = get_cmdarg(commandline_kwargs, 'noise_z', False)   # add Gaussian noise to the z-component of the inlet velocity
+        noise_sigma = get_cmdarg(commandline_kwargs, 'noise_sigma', 0.001)  # std dev of Gaussian noise
         noise_tag = "_noisy" if (noise_y or noise_z) else "_clean"
+        if mpi_rank == 0:
+            if noise_y or noise_z:
+                print('Inlet type: NOISY  (noise_y=%s, noise_z=%s, sigma=%s)' % (noise_y, noise_z, noise_sigma))
+            else:
+                print('Inlet type: CLEAN (no Gaussian noise)')
         case_fullname = (mesh_name + noise_tag + "_ts" + str(timesteps) + "_cy" + str(no_of_cycles))
         results_folder = f"./results/{case_fullname}_saveFreq{save_freq}"
 
@@ -395,6 +401,7 @@ def problem_parameters(commandline_kwargs, NS_parameters, **NS_namespace):
             ramp_offset               = get_cmdarg(commandline_kwargs, 'ramp_offset', 2),                   # offset of inflow ramp, used when inlet_BC_type='ramp'
             noise_y                   = noise_y,                                                            # add Gaussian noise to the y-component of the inlet velocity
             noise_z                   = noise_z,                                                            # add Gaussian noise to the z-component of the inlet velocity
+            noise_sigma               = noise_sigma,                                                        # std dev of Gaussian noise (default = 0.001 m/s)
             not_zero_pressure_outlets = not get_cmdarg(commandline_kwargs, 'zero_pressure_outlets', False),
             include_gravity           = get_cmdarg(commandline_kwargs,     'include_gravitational_effects', False),
             flat_profile_at_intlet_bc = get_cmdarg(commandline_kwargs,     'flat_profile_at_intlet_bc', False),
@@ -618,13 +625,12 @@ def poiseuille_inlet_velocity_xaxis(mesh, ds_inlet, Q_inflow, **NS_namespace):
     return [uinx_expression, Constant(0.0), Constant(0.0)]
 
 
-def gaussian_inlet_noise(tstep, sigma=0.001, noise_y=True, noise_z=True):
+def gaussian_inlet_noise(tstep, sigma, noise_y=True, noise_z=True):
     """
     Returns (eps_y, eps_z) transverse inlet noise [mm/ms == m/s].
-    Sigma has units m/s.
+    sigma: std of inlet noise [m/s] (default = 0.001 m/s).
     Each component ~ N(0, sigma^2); set noise_y/noise_z=False to suppress a direction.
     Seeded with tstep so all MPI ranks draw identical values without broadcast.
-    Sigma has units m/s.
     """
     rng = np.random.default_rng(seed=tstep)
     eps_y = rng.normal(0.0, sigma)
@@ -819,7 +825,7 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
 
     elif NS_parameters['inlet_BC_type'] == 'ramp':
         # Adding noise to the lateral velocity components (y and z)
-        eps_y, eps_z = gaussian_inlet_noise(tstep, sigma=0.01, noise_y=NS_parameters['noise_y'], noise_z=NS_parameters['noise_z'])
+        eps_y, eps_z = gaussian_inlet_noise(tstep, sigma=NS_parameters['noise_sigma'], noise_y=NS_parameters['noise_y'], noise_z=NS_parameters['noise_z'])
         for inlet in NS_expressions["inlet"]:
             #inlet[0].t = t
             inlet[0].Q_inflow = ramp_inflowrate(t, NS_parameters['ramp_slope'], NS_parameters['ramp_offset'])
