@@ -141,6 +141,13 @@ def extract_sim_params_from_foldername(input_path: Path) -> tuple[int, int | Non
 
     return timesteps_per_cyc, save_freq
 
+def flowrate_mLs_to_reynolds(Q_mLs, density, dynamic_viscosity, pipe_diameter_mm):
+    """Convert flow rate [mL/s] to inlet Reynolds number.
+    Assumes pipe_diameter is in mm (often the mesh units for our vascular cases).
+    Re = 4 * rho * Q / (pi * D * mu)
+    """
+    Q_m3s = np.asarray(Q_mLs) * 1e-6
+    return 4.0 * density * Q_m3s / (np.pi * (pipe_diameter_mm/1000) * dynamic_viscosity)
 
 # ---------------------------------------- Mesh Utilities -----------------------------------------------------
 
@@ -247,6 +254,21 @@ def load_surface_mesh_from_xmlgz(xml_gz_path: str) -> pv.PolyData:
 
     print(f"[mesh] Wall surface: {len(wall_point_ids)} nodes, {n_wall_cells} triangles")
     return surf
+
+
+def estimate_pipe_diameter_from_mesh(surf_mesh: pv.PolyData, pipe_axis: int = 0) -> float:
+    """
+    Estimate the inner pipe diameter from the wall mesh bounding box (in mesh units).
+
+    For a straight cylindrical pipe the two axes perpendicular to pipe_axis
+    each span exactly one diameter; this returns their average extent.
+    """
+    perp_axes = [i for i in range(3) if i != pipe_axis]
+    extents   = [surf_mesh.points[:, ax].ptp() for ax in perp_axes]
+    diameter  = float(np.mean(extents))
+    axis_label = {0: "X", 1: "Y", 2: "Z"}.get(pipe_axis, str(pipe_axis))
+    print(f"[mesh] Pipe diameter not defined by user, estimating from mesh directly: {diameter:.4f}")
+    return diameter
 
 
 # --------------------------------- Parallel File Reader -----------------------------------------------
@@ -441,21 +463,6 @@ def read_spec_regions_from_csv_idealGeom(csv_path: str) -> list:
     return regions
 
 
-def estimate_pipe_diameter_from_mesh(surf_mesh: pv.PolyData, pipe_axis: int = 0) -> float:
-    """
-    Estimate the inner pipe diameter from the wall mesh bounding box.
-
-    For a straight cylindrical pipe the two axes perpendicular to pipe_axis
-    each span exactly one diameter; this returns their average extent.
-    """
-    perp_axes = [i for i in range(3) if i != pipe_axis]
-    extents   = [surf_mesh.points[:, ax].ptp() for ax in perp_axes]
-    diameter  = float(np.mean(extents))
-    axis_label = {0: "X", 1: "Y", 2: "Z"}.get(pipe_axis, str(pipe_axis))
-    print(f"[mesh] Pipe diameter not defined by user, estimating from mesh directly: {diameter:.4f}")
-    return diameter
-
-
 def extract_wall_points_perROI_idealGeom(surf_mesh: pv.PolyData, x_lo: float, x_hi: float, pipe_axis: int = 0) -> np.ndarray:
     """
     Return indices of wall surface points whose coordinate along `axis` falls in [x_lo, x_hi].
@@ -471,7 +478,6 @@ def extract_wall_points_perROI_idealGeom(surf_mesh: pv.PolyData, x_lo: float, x_
             "Check pipe_diameter, pipe_axis, and region bounds."
         )
     return pids
-
 
 
 # ---------------------------------------- Compute Spectrograms -----------------------------------------------------
@@ -586,13 +592,13 @@ def filter_raw_spectrogram(spectrogram_data, spectral_analysis_params):
     Filter and trim the raw spectrogram data to the analysis window.
     Three operations are applied:
         1. Frequency axis : keep only rows where freqs <= freq_max.
-        2. Q axis         : keep only columns where Q_inlet = ramp_slope*t+ramp_offset falls in [Q_min, Q_max].
+        2. Q axis         : keep only columns where Q_inlet = ramp_slope*t+ramp_offset falls in [flowrate_min, flowrate_max].
         3. dB floor       : clamp any power values below cutoff_db up to cutoff_db.
 
     Parameters
     ----------
     spectrogram_data (dict) : Output of calculate_mean_spectrogram.
-    spectral_analysis_params (dict) : Must contain 'cutoff_db', 'freq_max', 'Q_min', 'Q_max'.
+    spectral_analysis_params (dict) : Must contain 'cutoff_db', 'freq_max', 'flowrate_min', 'flowrate_max'.
 
     Returns
     -------
@@ -602,8 +608,8 @@ def filter_raw_spectrogram(spectrogram_data, spectral_analysis_params):
     # Unpack parameters
     cutoff_db   = spectral_analysis_params.get("cutoff_db")
     freq_max    = spectral_analysis_params.get("freq_max")
-    Q_min       = spectral_analysis_params.get("Q_min")
-    Q_max       = spectral_analysis_params.get("Q_max")
+    flowrate_min       = spectral_analysis_params.get("flowrate_min")
+    flowrate_max       = spectral_analysis_params.get("flowrate_max")
     ramp_slope  = spectral_analysis_params.get("ramp_slope")
     ramp_offset = spectral_analysis_params.get("ramp_offset")
 
@@ -613,7 +619,7 @@ def filter_raw_spectrogram(spectrogram_data, spectral_analysis_params):
 
     # Build masks
     bins_Q    = ramp_slope * bins + ramp_offset    # Q_inlet = ramp_slope * t + ramp_offset
-    mask_Q    = (bins_Q >= Q_min) & (bins_Q <= Q_max)
+    mask_Q    = (bins_Q >= flowrate_min) & (bins_Q <= flowrate_max)
     mask_freq = freqs <= freq_max
     
     # Apply both masks simultaneously
@@ -779,17 +785,47 @@ def classify_spectrogram_phases(spectrogram_data, spectral_analysis_params):
     return Q_phases, spectral_metrics
 
 
-def plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data, Q_phases, spectral_metrics, analysis_params, plot_title, flag_plot_phases=True):
+def prepare_plot_xaxis(spectrogram_data, Q_phases, spectral_analysis_params, pipe_diameter):
+    """
+    Compute x-axis arrays for spectral analysis plots.
+    Returns x_vals, x_lim, x_label, x_phases in either flow-rate or Reynolds-number units.
+    """
+    bins_Q = spectral_analysis_params["ramp_slope"] * spectrogram_data["bins"] + spectral_analysis_params["ramp_offset"]
+
+    plots_xaxis_var   = spectral_analysis_params.get("plots_xaxis_var")
+    density           = spectral_analysis_params.get("density")
+    dynamic_viscosity = spectral_analysis_params.get("dynamic_viscosity")
+
+    if plots_xaxis_var == "reynolds":
+        x_vals   = flowrate_mLs_to_reynolds(bins_Q,                                  density, dynamic_viscosity, pipe_diameter)
+        x_min    = flowrate_mLs_to_reynolds(spectral_analysis_params["flowrate_min"], density, dynamic_viscosity, pipe_diameter)
+        x_cut    = flowrate_mLs_to_reynolds(spectral_analysis_params["flowrate_cut"], density, dynamic_viscosity, pipe_diameter)
+        x_phases = flowrate_mLs_to_reynolds(Q_phases,                                density, dynamic_viscosity, pipe_diameter)
+        x_label  = "Inlet Reynolds number"
+    else:
+        x_vals   = bins_Q
+        x_min    = spectral_analysis_params["flowrate_min"]
+        x_cut    = spectral_analysis_params["flowrate_cut"]
+        x_phases = Q_phases
+        x_label  = "Flow rate (mL/s)"
+
+    return x_vals, (x_min, x_cut), x_label, x_phases
+
+
+def plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data, Q_phases, spectral_metrics, analysis_params, pipe_diameter, plot_title, flag_plot_phases=True):
     """
     Plot and save spectrograms and spectral metrics as PNG files.
     """
-
+    
     # Extract relevant data for plotting
-    bins  = spectrogram_data['bins']
+    #bins  = spectrogram_data['bins']
     freqs = spectrogram_data['freqs']
     spectrogram_signal = spectrogram_data['power_avg_dB']
 
-    bins_Q = analysis_params.get("ramp_slope") * bins + analysis_params.get("ramp_offset")
+    #bins_Q = analysis_params.get("ramp_slope") * bins + analysis_params.get("ramp_offset")
+
+    # Setting up the xaxis 
+    x_vals, x_lim, x_label, x_phases = prepare_plot_xaxis(spectrogram_data, Q_phases, analysis_params, pipe_diameter)
 
     # Setting plot properties
     font_size = 20
@@ -808,48 +844,47 @@ def plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data
 
 
     # ------------------------ Subplot 0: Spectrogram ----------------------------
-    spectrogram = ax[0].pcolormesh(bins_Q, freqs, spectrogram_signal, shading='gouraud', cmap='inferno')
+    spectrogram = ax[0].pcolormesh(x_vals, freqs, spectrogram_signal, shading='gouraud', cmap='inferno')
     # Set the limit for power colormap
     spectrogram.set_clim(analysis_params['SPL_db_min'], analysis_params['SPL_db_max'])
 
-
     ax[0].set_ylabel('Frequency (Hz)',   fontweight='bold', fontsize=font_size, labelpad=10)
-    ax[0].set_ylim([0, 2000]) #analysis_params['freq_max']])
+    ax[0].set_ylim([0, 1000]) #analysis_params['freq_max']])
 
     # Adding the colorbar
-    # cbar = fig.colorbar(spectrogram, ax=ax[0], orientation='vertical') #pad=0.5
-    # cbar.set_label('SPL (dB)', rotation=270, labelpad=15, size=16, fontweight='bold')
+    cbar = fig.colorbar(spectrogram, ax=ax[0], orientation='vertical') #pad=0.5
+    cbar.set_label('SPL (dB)', rotation=270, labelpad=15, size=16, fontweight='bold')
 
 
     # ------------------------ Subplot 1: Mean power ----------------------------
-    ax[1].plot(bins_Q, spectral_metrics['mean_power_lowFreq'],  label='low-freq',  linewidth = 4, color='tab:green') #(160/255,230/255,245/255)) #RGB:'#A6CEE3'
-    ax[1].plot(bins_Q, spectral_metrics['mean_power_midFreq'],  label='mid-freq',  linewidth = 4, color='tab:blue') #deepskyblue
-    ax[1].plot(bins_Q, spectral_metrics['mean_power_highFreq'], label='high-freq', linewidth = 4, color='tab:red') #'mediumblue'
+    ax[1].plot(x_vals, spectral_metrics['mean_power_lowFreq'],  label='low-freq',  linewidth = 4, color='tab:green') #(160/255,230/255,245/255)) #RGB:'#A6CEE3'
+    ax[1].plot(x_vals, spectral_metrics['mean_power_midFreq'],  label='mid-freq',  linewidth = 4, color='tab:blue') #deepskyblue
+    ax[1].plot(x_vals, spectral_metrics['mean_power_highFreq'], label='high-freq', linewidth = 4, color='tab:red') #'mediumblue'
 
     ax[1].set_ylim([-1, analysis_params['SPL_db_max']])
     ax[1].set_ylabel('Mean SPL power (dB)', fontweight='bold', labelpad=20, fontsize=font_size)
     #ax[1].legend(loc = 'upper left', fontsize=font_size)
 
     # ------------------------ Subplot 2: Spectral Centroid ----------------------------
-    ax[2].plot(bins_Q, spectral_metrics['centroid_freq'], linewidth = 4, color='black')
+    ax[2].plot(x_vals, spectral_metrics['centroid_freq'], linewidth = 4, color='black')
     ax[2].set_ylim([-1, 500])
     ax[2].set_ylabel('Spectral Centroid (Hz)', fontweight='bold', fontsize=font_size, labelpad=10)
 
 
     #------- Common x-axis settings
     for a in ax:
-        a.set_xlim([analysis_params['Q_min'], analysis_params['Q_cut']])
+        a.set_xlim(x_lim)
         a.tick_params(direction='in')
-        a.set_xlabel('Flow rate (mL/s)', fontweight='bold', labelpad=10)
-    ax[2].set_xlabel('Flow rate (mL/s)', fontweight='bold', fontsize=font_size, labelpad=10)
+        #a.set_xlabel(x_label, fontweight='bold', labelpad=10)
+    ax[2].set_xlabel(x_label, fontweight='bold', fontsize=font_size, labelpad=10)
 
     #--------- Adding phase lines 
     if flag_plot_phases:
-        for (phase, Qphase) in enumerate(Q_phases, start=1):
-            if not np.isnan(Qphase):
-                print(f'Inlet flowrate of onset Phase {phase} = {Qphase:.2f} mL/s')
+        for (phase, xphase) in enumerate(x_phases, start=1):
+            if not np.isnan(xphase):
+                print(f'Start of Phase {phase}: {x_label} = {xphase:.2f}')
                 for a in ax:
-                    a.axvline(Qphase, color="darkgray", linestyle="dashed", linewidth=3, zorder = 5, alpha=0.8)
+                    a.axvline(xphase, color="darkgray", linestyle="dashed", linewidth=3, zorder = 5, alpha=0.8)
 
 
     #----- For customizing the colorbar and axis for figures ----
@@ -941,7 +976,7 @@ def compute_and_save_spectrogram_perROI_for_idealGeom(
     Q_phases, spectral_metrics = classify_spectrogram_phases(spectrogram_data_filt, spectral_analysis_params)
     plot_spectrogram_and_metrics(output_folder_imgs, case_name,
                                 spectrogram_data_filt, Q_phases, spectral_metrics,
-                                spectral_analysis_params, spectrogram_title)
+                                spectral_analysis_params, pipe_diameter, spectrogram_title)
 
 
 # ======================================================================================================
@@ -958,12 +993,13 @@ def parse_args():
     ap.add_argument("--case_name",      required=True,       help="Case name")
     ap.add_argument("--n_process",      type=int,            help="Number of parallel processes", default=max(1, mp.cpu_count() - 1))
 
-    ap.add_argument("--density",           type=float,  default=1057,   help="Blood density [kg/m3] (default: 1057)")
-    ap.add_argument("--period_seconds",    type=float,  default=1,  help="Period in seconds")
-    ap.add_argument("--timesteps_per_cyc", type=int,   default=None,    help="Number of timesteps per cycle (parsed from filename '_ts<int>' if omitted)")
-    ap.add_argument("--save_freq",         type=int,   default=None,    help="Snapshot save frequency: every Nth timestep saved (parsed from filename 'saveFreq(<int>)' if omitted)")
-    ap.add_argument("--spec_quantity",     type=str,    required=True,  choices=["wallpressure","velocity","qcriterion"], help="Quantity of interest used for spectrogram")
-    ap.add_argument("--spec_regions_csv",  type=str,    default=None,   help="CSV defining anatomical regions. idealized: columns x_start_D, x_end_D, region_shortname.")   
+    ap.add_argument("--density",           type=float,  default=1057,       help="Blood density [kg/m3] (default: 1057)")
+    ap.add_argument("--dynamic_viscosity", type=float,  default=0.0035,     help="Blood dynamic viscosity [Pa·s] used when --x_axis_var=reynolds (default: 0.0035)")
+    ap.add_argument("--period_seconds",    type=float,  default=1,          help="Period in seconds")
+    ap.add_argument("--timesteps_per_cyc", type=int,    default=None,        help="Number of timesteps per cycle (parsed from filename '_ts<int>' if omitted)")
+    ap.add_argument("--save_freq",         type=int,    default=None,        help="Snapshot save frequency: every Nth timestep saved (parsed from filename 'saveFreq(<int>)' if omitted)")
+    ap.add_argument("--spec_quantity",     type=str,    required=True,      choices=["wallpressure","velocity","qcriterion"], help="Quantity of interest used for spectrogram")
+    ap.add_argument("--spec_regions_csv",  type=str,    default=None,       help="CSV defining anatomical regions. idealized: columns x_start_D, x_end_D, region_shortname.")   
 
     # Idealized-geometry parameters
     ap.add_argument("--pipe_diameter",      type=float, default=None, help="Pipe inner diameter [mesh units]. If omitted, estimated from the mesh bounding box.")
@@ -981,18 +1017,18 @@ def parse_args():
 
 
     # Spectral analysis and visualization parameters
-    ap.add_argument("--cutoff_db",          type=float, default=0.0,      help="Minimum dB floor for visualization")
-    ap.add_argument("--freq_low",           type=float, default=100,      help="Upper threshold for low-frequency band in Hz (default: 100 Hz)")
-    ap.add_argument("--freq_mid",           type=float, default=1000,     help="Upper threshold for mid-frequency band in Hz (default: 1000 Hz)")
-    ap.add_argument("--freq_max",           type=float, default=5000,     help="Maximum frequency to filter spectrogram in Hz (default: 5000 Hz)")
-    ap.add_argument("--flowrate_min",       type=float, default=2.0,      help="Lower inlet flowrate limit for analysis window in mL/s (default: 2.0)")
-    ap.add_argument("--flowrate_max",       type=float, default=10.0,      help="Upper inlet flowrate limit for analysis window in mL/s (default: 10.0)")
-    ap.add_argument("--flowrate_cut",       type=float, default=8.0,      help="Upper inlet flowrate limit for figures in mL/s (default: 8.0)")
-    ap.add_argument("--power_SPL_db_min",   type=float, default=20.0,     help="Lower SPL power limit for spectrogram colormap in dB (default: 20)")
-    ap.add_argument("--power_SPL_db_max",   type=float, default=120.0,    help="Upper SPL power limit for spectrogram colormap in dB (default: 120)")
-    ap.add_argument("--ramp_slope",         type=float, default=2.0,      help="Slope of the flow-rate ramp [mL/s]: Q = ramp_slope * t + ramp_offset (default: 2.0)")
-    ap.add_argument("--ramp_offset",        type=float, default=2.0,      help="Offset of the flow-rate ramp [mL/s2]: Q = ramp_slope * t + ramp_offset (default: 2.0)")
-
+    ap.add_argument("--cutoff_db",           type=float, default=0.0,        help="Minimum dB floor for visualization")
+    ap.add_argument("--freq_low",            type=float, default=100,        help="Upper threshold for low-frequency band in Hz (default: 100 Hz)")
+    ap.add_argument("--freq_mid",            type=float, default=1000,       help="Upper threshold for mid-frequency band in Hz (default: 1000 Hz)")
+    ap.add_argument("--freq_max",            type=float, default=5000,       help="Maximum frequency to filter spectrogram in Hz (default: 5000 Hz)")
+    ap.add_argument("--flowrate_min",        type=float, default=2.0,        help="Lower inlet flowrate limit for analysis window in mL/s (default: 2.0)")
+    ap.add_argument("--flowrate_max",        type=float, default=10.0,       help="Upper inlet flowrate limit for analysis window in mL/s (default: 10.0)")
+    ap.add_argument("--flowrate_cut",        type=float, default=8.0,        help="Upper inlet flowrate limit for figures in mL/s (default: 8.0)")
+    ap.add_argument("--power_SPL_db_min",    type=float, default=20.0,       help="Lower SPL power limit for spectrogram colormap in dB (default: 20)")
+    ap.add_argument("--power_SPL_db_max",    type=float, default=120.0,      help="Upper SPL power limit for spectrogram colormap in dB (default: 120)")
+    ap.add_argument("--ramp_slope",          type=float, default=2.0,        help="Slope of the flow-rate ramp [mL/s]: Q = ramp_slope * t + ramp_offset (default: 2.0)")
+    ap.add_argument("--ramp_offset",         type=float, default=2.0,        help="Offset of the flow-rate ramp [mL/s2]: Q = ramp_slope * t + ramp_offset (default: 2.0)")
+    ap.add_argument("--plots_xaxis_variable",type=str,   default="reynolds", choices=["flowrate", "reynolds"], help="X-axis for spectral plots: 'flowrate' (mL/s) or 'reynolds' (inlet Re number). (default: flowrate)")
     return ap.parse_args()
 
 
@@ -1028,17 +1064,21 @@ def main():
         "detrend": args.detrend}
     
     spectral_analysis_params = {
-        "cutoff_db":   args.cutoff_db,
-        "freq_low":    args.freq_low,
-        "freq_mid":    args.freq_mid,
-        "freq_max":    args.freq_max,
-        "Q_min":       args.flowrate_min,
-        "Q_max":       args.flowrate_max,
-        "Q_cut":       args.flowrate_cut,
-        "SPL_db_min":  args.power_SPL_db_min,
-        "SPL_db_max":  args.power_SPL_db_max,
-        "ramp_slope":  args.ramp_slope,
-        "ramp_offset": args.ramp_offset}
+        "cutoff_db":         args.cutoff_db,
+        "freq_low":          args.freq_low,
+        "freq_mid":          args.freq_mid,
+        "freq_max":          args.freq_max,
+        "flowrate_min":      args.flowrate_min,
+        "flowrate_max":      args.flowrate_max,
+        "flowrate_cut":      args.flowrate_cut,
+        "SPL_db_min":        args.power_SPL_db_min,
+        "SPL_db_max":        args.power_SPL_db_max,
+        "ramp_slope":        args.ramp_slope,
+        "ramp_offset":       args.ramp_offset,
+        "plots_xaxis_var":   args.plots_xaxis_variable,
+        "dynamic_viscosity": args.dynamic_viscosity,
+        "density":           args.density,
+    }
 
     # Load mesh
     h5_files     = list(Path(mesh_folder).glob('*.h5'))

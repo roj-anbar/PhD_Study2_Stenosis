@@ -33,12 +33,12 @@ set -euo pipefail
 echo "Job started: $(date)"
 
 # ---------------------------------- Define Paths -------------------------------------------------------------------------------
-CASE=eccStenosis                                                            # Case name
-BASE_DIR=$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais        # Parent directory of the case
-MESH_FOLDER="$BASE_DIR/step1_CFD/data"                                      # Path to mesh data folder containing the h5 mesh
-INPUT="$BASE_DIR/step1_CFD/results/${CASE}_noisy_ts12000_cy6_saveFreq1"    # Path to CFD results folder containing timeseries HDF5 files
-OUTPUT="$BASE_DIR/step2_PostProcess"                                        # Path to saving spectrogram files
-SPECTROGRAM_REGIONS="$OUTPUT/configs/${CASE}_spectrogram_regions.csv"       # Path to spectrogram regions csv file used to generate regional specs
+CASE=eccStenosis                                                                                # Case name
+BASE_DIR=$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais                # Parent directory of the case
+MESH_FOLDER="$BASE_DIR/step1_CFD/data"                                                          # Path to mesh data folder containing the h5 mesh
+INPUT="$BASE_DIR/step1_CFD/results/rampoffset2mLs/${CASE}_noisy_ts12000_cy6_saveFreq1"          # Path to CFD results folder containing timeseries HDF5 files
+OUTPUT="$BASE_DIR/step2_PostProcess"                                                            # Path to saving spectrogram files
+SPECTROGRAM_REGIONS="$OUTPUT/configs/${CASE}_spectrogram_regions.csv"                           # Path to spectrogram regions csv file used to generate regional specs
 
 SCRIPT="/scratch/ranbar/My_Projects/Study2_stenosis/scripts/step2_PostProcess/compute_Spectrogram_idealGeom.py"
 
@@ -84,7 +84,8 @@ python "$SCRIPT" \
     --flowrate_min          3 \
     --flowrate_max          13.5 \
     --flowrate_cut          13.5 \
-    --flag_save_ROI         
+    --plots_xaxis_variable  "reynolds" 
+#    --flag_save_ROI         
 
 
 
