@@ -346,12 +346,7 @@ def problem_parameters(commandline_kwargs, NS_parameters, **NS_namespace):
         noise_y     = get_cmdarg(commandline_kwargs, 'noise_y', False)   # add Gaussian noise to the y-component of the inlet velocity
         noise_z     = get_cmdarg(commandline_kwargs, 'noise_z', False)   # add Gaussian noise to the z-component of the inlet velocity
         noise_sigma = get_cmdarg(commandline_kwargs, 'noise_sigma', 0.001)  # std dev of Gaussian noise
-        noise_tag = "_noisy" if (noise_y or noise_z) else "_clean"
-        if mpi_rank == 0:
-            if noise_y or noise_z:
-                print('Inlet type: NOISY  (noise_y=%s, noise_z=%s, sigma=%s)' % (noise_y, noise_z, noise_sigma))
-            else:
-                print('Inlet type: CLEAN (no Gaussian noise)')
+        noise_tag   = "_noisy" if (noise_y or noise_z) else "_clean"
         case_fullname = (mesh_name + noise_tag + "_ts" + str(timesteps) + "_cy" + str(no_of_cycles))
         results_folder = f"./results/{case_fullname}_saveFreq{save_freq}"
 
@@ -659,8 +654,11 @@ def create_bcs(u_, p_, p_1, t, NS_expressions, V, Q, area_ratio, mesh, subdomain
     # Womersley boundary condition at inlet
     inlet_ids_count = len(inlet_ids)
     if mpi_rank == 0:
-        noise_status = 'noisy' if (NS_parameters['noise_y'] or NS_parameters['noise_z']) else 'clean'
-        print ('Inlet BC type is:', NS_parameters['inlet_BC_type'], '(%s)' % noise_status)
+        if NS_parameters['noise_y'] or NS_parameters['noise_z']:
+            print(f'Inlet BC type is {NS_parameters["inlet_BC_type"]} and NOISY (noise_y={NS_parameters["noise_y"]}, noise_z={NS_parameters["noise_z"]}, sigma={NS_parameters["noise_sigma"]})\n')
+        else:
+            print(f'Inlet BC type is {NS_parameters["inlet_BC_type"]} and CLEAN (no Gaussian noise)\n')
+
         print('Inlet', 'BCs' if inlet_ids_count > 1 else 'BC', 'on boundaries:' if inlet_ids_count > 1 else 'on boundary', inlet_ids)
         firststr = '    %8s    %-12s    %10s    %15s    %6s'%('inlet_id','wave_form','period(ms)','flowrate(mL/s)','cells')
         secondstr = 'Inlets & Outlets Information\n'+'  id   %-45s  %-45s   %-12s   %-12s'%('center','normal','radius','area')
