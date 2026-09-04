@@ -1,0 +1,83 @@
+#!/bin/bash
+#-----------------------------------------------------------------------------------------------------------------------
+# extract_circumferential_pressure_job.sh
+# SLURM wrapper to run extract_circumferential_pressure.py for a specific case on Trillium-style clusters.
+#
+# __author__ = Rojin Anbarafshan <rojin.anbar@gmail.com>
+# __date__   = 2026-09
+#
+# PURPOSE:
+#   - Sample N evenly-spaced circumferential wall nodes at a given axial slice of an
+#     idealized stenosis geometry, and save them as a .vtp file for ParaView inspection.
+#
+# EXECUTION:
+#   sbatch extract_circumferential_pressure_job.sh
+#
+# Copyright (C) 2026 University of Toronto, Biomedical Simulation Lab.
+#-----------------------------------------------------------------------------------------------------------------------
+
+#SBATCH --partition=debug
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --time=00:10:00
+#SBATCH --job-name PT_CircNodes
+#SBATCH --output=PT_CircNodes_%j.txt
+
+
+set -euo pipefail
+echo "Job started: $(date)"
+
+# ---------------------------------- Define Paths -----------------------------------------------------------------------
+CASE=eccStenosis                                                                    # Case name
+BASE_DIR=$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais    # Parent directory of the case
+MESH_FOLDER="$BASE_DIR/step1_CFD/data"                                           # Folder containing mesh .h5 or .xml.gz
+INPUT="$BASE_DIR/step1_CFD/results/rampoffset2mLs/${CASE}_clean_ts12000_cy6_saveFreq1"          # Path to CFD results folder containing timeseries HDF5 files
+OUTPUT="$BASE_DIR/step2_PostProcess/ModalAnalysis"                        # Output folder for .vtp files
+
+SCRIPT="$SCRATCH/My_Projects/Study2_stenosis/scripts/step2_PostProcess/extract_circumferential_pressure.py"
+
+# ---------------------------------- Slice Parameters -------------------------------------------------------------------
+SLICE_XCOORD=0.0          # Axial (X) coordinate of the cross-sectional slice [mesh units]
+N_POINTS=32               # Number of evenly-spaced circumferential sample points
+PIPE_AXIS=0               # Axis along which the pipe runs: 0=X, 1=Y, 2=Z
+#PIPE_DIAMETER=            # Uncomment and set if you want to override the bounding-box estimate
+
+
+# --------------------------------- Load Modules ------------------------------------------------------------------------
+module load StdEnv/2023 gcc/12.3 python/3.12.4
+source $HOME/virtual_envs/pyvista36/bin/activate
+module load vtk/9.3.0
+
+
+# --------------------------------- Export Directories -----------------------------------------------------------------
+mkdir -p "$OUTPUT"
+mkdir -p "$SCRATCH/.config/mpl"
+
+export MPLCONFIGDIR=$SCRATCH/.config/mpl
+export PYVISTA_OFF_SCREEN=true
+
+
+# --------------------------------- Run Script -------------------------------------------------------------------------
+python "$SCRIPT" \
+    --case_name         "$CASE"          \
+    --mesh_folder       "$MESH_FOLDER"   \
+    --output_folder     "$OUTPUT"        \
+    --slice_xcoord      $SLICE_XCOORD    \
+    --n_circumferential $N_POINTS        \
+    --pipe_axis         $PIPE_AXIS
+#   --pipe_diameter     6.35             # uncomment to override diameter estimate
+
+wait
+echo "Job finished: $(date)"
+
+
+#---------------------- For running directly from the command line ------------------------------------------------------
+# Load modules first, then run:
+#
+python extract_circumferential_pressure.py \
+    --case_name         "eccStenosis" \
+    --mesh_folder       "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/data" \
+    --output_folder     "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess/ModalAnalysis" \
+    --slice_xcoord      10.0  \
+    --n_circumferential 8   \
+    --pipe_axis         0
