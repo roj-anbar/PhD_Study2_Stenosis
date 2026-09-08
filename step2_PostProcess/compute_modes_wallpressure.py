@@ -337,9 +337,6 @@ def compute_spatial_fourier_coefficients(pressure: np.ndarray) -> tuple[np.ndarr
     """
     Compute the spatial DFT over N evenly-spaced circumferential nodes at every timestep.
 
-    Because the nodes are uniformly distributed in angle, a standard DFT gives exact
-    circumferential wavenumber decomposition with no interpolation needed.
-
     Parameters
     ----------
     pressure : (N, n_snapshots)  Wall pressure [Pa] at the N sample nodes over time.

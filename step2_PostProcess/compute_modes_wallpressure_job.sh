@@ -35,7 +35,7 @@ MESH_FOLDER="$BASE_DIR/step1_CFD/data"                                          
 INPUT="$BASE_DIR/step1_CFD/results/rampoffset2mLs/${CASE}_clean_ts12000_cy6_saveFreq1"          # Path to CFD results folder containing timeseries HDF5 files
 OUTPUT="$BASE_DIR/step2_PostProcess/ModalAnalysis"                        # Output folder for .vtp files
 
-SCRIPT="$SCRATCH/My_Projects/Study2_stenosis/scripts/step2_PostProcess/extract_circumferential_pressure.py"
+SCRIPT="$SCRATCH/My_Projects/Study2_stenosis/scripts/step2_PostProcess/compute_modes_wallpressure.py"
 
 # ---------------------------------- Step 1: Slice Parameters -----------------------------------------------------------
 SLICE_XCOORD=0.0          # Axial (X) coordinate of the cross-sectional slice [mesh units]
@@ -88,7 +88,7 @@ echo "Job finished: $(date)"
 #---------------------- For running directly from the command line ------------------------------------------------------
 # Load modules first, then run:
 #
-python extract_circumferential_pressure.py \
+python compute_modes_wallpressure.py \
     --case_name         "eccStenosis" \
     --mesh_folder       "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/data" \
     --input_folder      "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/results/rampoffset2mLs/eccStenosis_clean_ts12000_cy6_saveFreq1" \

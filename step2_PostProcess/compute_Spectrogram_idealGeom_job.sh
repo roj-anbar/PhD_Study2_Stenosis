@@ -36,7 +36,7 @@ echo "Job started: $(date)"
 CASE=eccStenosis                                                                                # Case name
 BASE_DIR=$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais                # Parent directory of the case
 MESH_FOLDER="$BASE_DIR/step1_CFD/data"                                                          # Path to mesh data folder containing the h5 mesh
-INPUT="$BASE_DIR/step1_CFD/results/rampoffset2mLs/${CASE}_noisy_ts12000_cy6_saveFreq1"          # Path to CFD results folder containing timeseries HDF5 files
+INPUT_CFD="$BASE_DIR/step1_CFD/results/rampoffset2mLs/${CASE}_clean_ts12000_cy6_saveFreq1"          # Path to CFD results folder containing timeseries HDF5 files
 OUTPUT="$BASE_DIR/step2_PostProcess"                                                            # Path to saving spectrogram files
 SPECTROGRAM_REGIONS="$OUTPUT/configs/${CASE}_spectrogram_regions.csv"                           # Path to spectrogram regions csv file used to generate regional specs
 
@@ -74,7 +74,7 @@ export PYVISTA_OFF_SCREEN=true                              #tells pyvista to us
 
 python "$SCRIPT" \
     --case_name             "$CASE" \
-    --input_folder          "$INPUT" \
+    --input_folder          "$INPUT_CFD" \
     --mesh_folder           "$MESH_FOLDER" \
     --output_folder         "$OUTPUT" \
     --spec_regions_csv      "$SPECTROGRAM_REGIONS" \
@@ -93,19 +93,19 @@ python "$SCRIPT" \
 # Note1: You HAVE to load the modules first from terminal then run below
 # Note2: You HAVE to comment this part if submitting this file through sbatch
 
-# python compute_Spectrogram_idealGeom.py \
-#     --case_name             "eccStenosis" \
-#     --input_folder          "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/results/eccStenosis_clean_ts12000_cy6_saveFreq1" \
-#     --mesh_folder           "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/data" \
-#     --output_folder         "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess" \
-#     --spec_regions_csv      "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess/configs/eccStenosis_spectrogram_regions.csv" \
-#     --spec_quantity         "wallpressure" \
-#     --window_length         2000 \
-#     --power_SPL_db_min      0     \
-#     --flowrate_min          3 \
-#     --flowrate_max          13.5 \
-#     --flowrate_cut          13.5 \
-#     --flag_save_ROI         
+python compute_Spectrogram_idealGeom.py \
+    --case_name             "eccStenosis" \
+    --input_folder          "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/results/rampoffset2mLs/eccStenosis_clean_ts12000_cy6_saveFreq1" \
+    --mesh_folder           "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/data" \
+    --output_folder         "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess" \
+    --spec_regions_csv      "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess/configs/eccStenosis_spectrogram_regions.csv" \
+    --spec_quantity         "wallpressure" \
+    --window_length         2000 \
+    --power_SPL_db_min      0     \
+    --flowrate_min          3 \
+    --flowrate_max          13.5 \
+    --flowrate_cut          13.5 \
+    --plots_xaxis_variable  "reynolds"     
 
 #--pipe_diameter         6.35 \
 wait
