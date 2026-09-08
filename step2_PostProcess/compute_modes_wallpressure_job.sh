@@ -73,7 +73,7 @@ python "$SCRIPT" \
     --input_folder      "$INPUT"         \
     --output_folder     "$OUTPUT"        \
     --slice_xcoord      $SLICE_XCOORD    \
-    --n_circumferential $N_POINTS        \
+    --n_wallNodes       $N_POINTS        \
     --pipe_axis         $PIPE_AXIS       \
     --density           $DENSITY         \
     --period_seconds    $PERIOD_S
@@ -94,5 +94,5 @@ python compute_modes_wallpressure.py \
     --input_folder      "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/results/rampoffset2mLs/eccStenosis_clean_ts12000_cy6_saveFreq1" \
     --output_folder     "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess/ModalAnalysis" \
     --slice_xcoord      10.0  \
-    --n_circumferential 8   \
+    --n_wallNodes       64   \
     --pipe_axis         0

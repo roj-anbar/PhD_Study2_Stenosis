@@ -22,6 +22,7 @@ from pathlib import Path
 
 import numpy as np
 import pyvista as pv
+import matplotlib.pyplot as plt
 
 
 # ======================================================================================================
@@ -95,7 +96,7 @@ def load_surface_mesh_from_xmlgz(xml_gz_path: str) -> pv.PolyData:
     surf           = pv.PolyData(wall_coords, cells_vtk)
     surf.point_data['vtkOriginalPtIds'] = wall_point_ids
 
-    print(f"[mesh] Wall surface: {len(wall_point_ids)} nodes, {n_wall_cells} triangles")
+    #print(f"[mesh] Wall surface: {len(wall_point_ids)} nodes, {n_wall_cells} triangles")
     return surf
 
 
@@ -208,8 +209,7 @@ def sample_circumferential_nodes(surf_mesh:     pv.PolyData,
     n_unique = np.unique(node_indices).size
     if n_unique < n_points:
         warnings.warn(
-            f"{n_points - n_unique} of {n_points} angles mapped to the same mesh node. "
-            "Consider reducing --n_circumferential.",
+            f"{n_points - n_unique} of {n_points} angles mapped to the same mesh node. \n Consider reducing --n_wallNodes.",
             UserWarning, stacklevel=2,
         )
 
@@ -255,26 +255,47 @@ def save_selected_nodes_vtp(output_path: Path,
 # STEP 2 — PRESSURE EXTRACTION AT SAMPLE NODES
 # ======================================================================================================
 
+import multiprocessing as mp
+from multiprocessing import sharedctypes
+
+
+def _create_shared_array(shape, dtype=np.float64):
+    ctype_array = np.ctypeslib.as_ctypes(np.zeros(shape, dtype=dtype).ravel())
+    return sharedctypes.Array(ctype_array._type_, ctype_array, lock=False), shape
+
+
+def _view_shared_array(shared_obj, shape):
+    return np.ctypeslib.as_array(shared_obj).reshape(shape)
+
+
+def _read_pressure_worker(file_ids, vol_point_ids, h5_files, shared_ctype, shape, density):
+    """Worker: read a chunk of snapshot files and write into the shared pressure array."""
+    pressure = _view_shared_array(shared_ctype, shape)
+    for t in file_ids:
+        with h5py.File(h5_files[t], 'r') as h5:
+            pressure[:, t] = np.array(h5['Solution']['p'])[vol_point_ids].ravel() * density
+
+
 def read_pressure_at_sample_nodes(input_folder:  Path,
                                    vol_point_ids: np.ndarray,
                                    density:       float,
+                                   n_process:     int,
                                    ) -> tuple[np.ndarray, list[Path]]:
     """
-    Read pressure time-series for the N selected circumferential nodes from CFD HDF5 snapshots.
-
-    Only the rows corresponding to vol_point_ids are read from each snapshot, so memory
-    use is O(N × n_snapshots) rather than O(n_wall_nodes × n_snapshots).
+    Read pressure time-series for the N selected circumferential nodes from CFD HDF5 snapshots
+    in parallel, distributing snapshots across n_process workers.
 
     Parameters
     ----------
-    input_folder  : Path   Folder containing '*_curcyc_*up.h5' snapshot files.
+    input_folder  : Path    Folder containing '*_curcyc_*up.h5' snapshot files.
     vol_point_ids : (N,) int  Global volume-mesh point IDs for the N sample nodes.
-    density       : float  Blood density [kg/m³] — multiplied because Oasis stores p/ρ.
+    density       : float   Blood density [kg/m³] — multiplied because Oasis stores p/ρ.
+    n_process     : int     Number of parallel worker processes.
 
     Returns
     -------
     pressure : np.ndarray  shape (N, n_snapshots) in Pa.
-    h5_files : list[Path]  Sorted list of snapshot files (for sampling-rate calculation).
+    h5_files : list[Path]  Sorted list of snapshot files.
     """
     h5_files = sorted(input_folder.glob('*_curcyc_*up.h5'),
                       key=extract_timestep_from_h5_filename)
@@ -283,13 +304,23 @@ def read_pressure_at_sample_nodes(input_folder:  Path,
 
     n_snapshots = len(h5_files)
     n_nodes     = len(vol_point_ids)
-    pressure    = np.zeros((n_nodes, n_snapshots), dtype=np.float64)
+    shape       = (n_nodes, n_snapshots)
 
-    print(f"[step2] Reading {n_snapshots} snapshots for {n_nodes} nodes ...")
-    for t, f in enumerate(h5_files):
-        with h5py.File(f, 'r') as h5:
-            pressure[:, t] = np.array(h5['Solution']['p'])[vol_point_ids].ravel() * density
+    shared_ctype, shape = _create_shared_array(shape)
 
+    print(f"[step2] Reading {n_snapshots} snapshots for {n_nodes} nodes across {n_process} workers ...")
+
+    chunk_size = max(n_snapshots // n_process, 1)
+    chunks     = [list(range(n_snapshots))[i : i + chunk_size]
+                  for i in range(0, n_snapshots, chunk_size)]
+
+    procs = [mp.Process(target=_read_pressure_worker,
+                        args=(chunk, vol_point_ids, h5_files, shared_ctype, shape, density))
+             for chunk in chunks]
+    for p in procs: p.start()
+    for p in procs: p.join()
+
+    pressure = _view_shared_array(shared_ctype, shape).copy()
     print(f"[step2] Pressure array shape: {pressure.shape}  (nodes × snapshots)")
     return pressure, h5_files
 
@@ -337,6 +368,9 @@ def compute_spatial_fourier_coefficients(pressure: np.ndarray) -> tuple[np.ndarr
     """
     Compute the spatial DFT over N evenly-spaced circumferential nodes at every timestep.
 
+    The raw rfft output is divided by N so that |coeffs[m, t]| gives the true
+    sinusoidal amplitude of mode m in the same units as the input (Pa).
+
     Parameters
     ----------
     pressure : (N, n_snapshots)  Wall pressure [Pa] at the N sample nodes over time.
@@ -344,17 +378,54 @@ def compute_spatial_fourier_coefficients(pressure: np.ndarray) -> tuple[np.ndarr
     Returns
     -------
     coeffs     : (n_modes, n_snapshots) complex128
-                 One-sided DFT coefficients; n_modes = N // 2 + 1.
+                 Normalised one-sided DFT coefficients; n_modes = N // 2 + 1.
                  Row m holds the complex amplitude of circumferential mode m at each timestep.
                    m = 0  →  mean (axisymmetric)
                    m = 1  →  first circumferential harmonic (single-lobe asymmetry)
                    m = 2  →  second harmonic, etc.
     mode_numbers : (n_modes,) int  Wavenumber indices [0, 1, ..., N//2].
     """
-    coeffs       = np.fft.rfft(pressure, axis=0)          # (n_modes, n_snapshots), complex
+    n_nodes      = pressure.shape[0]
+    coeffs       = np.fft.rfft(pressure, axis=0) / n_nodes   # (n_modes, n_snapshots), complex, [Pa]
     mode_numbers = np.arange(coeffs.shape[0], dtype=int)
-    print(f"[step3] Spatial FFT: {pressure.shape[0]} nodes → {coeffs.shape[0]} modes  |  shape {coeffs.shape}")
+    print(f"[step3] Spatial FFT: {n_nodes} nodes → {coeffs.shape[0]} modes  |  shape {coeffs.shape}")
     return coeffs, mode_numbers
+
+
+def plot_mode_amplitudes(output_path:   Path,
+                         coeffs:        np.ndarray,
+                         mode_numbers:  np.ndarray,
+                         sampling_rate: float,
+                         case_name:     str,
+                         slice_xcoord:  float,
+                         ) -> None:
+    """
+    Plot the time evolution of all circumferential mode amplitudes on one figure.
+
+    amplitude[m, t] = |coeffs[m, t]|  [Pa]  (coeffs already normalised by N)
+    """
+    amplitude   = np.abs(coeffs)                           # (n_modes, n_snapshots) [Pa]
+    n_snapshots = coeffs.shape[1]
+    time        = np.arange(n_snapshots) / sampling_rate   # [s]
+
+    cmap   = plt.get_cmap('tab10')
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    fig.suptitle(f"{case_name}  |  slice x={slice_xcoord}  |  Wall-pressure mode amplitudes", fontsize=13, fontweight='bold')
+
+    for m in mode_numbers[1:]:
+        ax.plot(time, amplitude[m, :], color=cmap((m - 1) % 10), linewidth=2, label=f'm = {m}')
+
+    ax.set_xlabel('Time [s]', fontweight='bold')
+    ax.set_ylabel('Amplitude [Pa]', fontweight='bold')
+    ax.legend(loc='upper right', fontsize=10, ncol=2)
+    ax.tick_params(direction='in')
+
+    plt.tight_layout()
+    save_path = Path(str(output_path) + '.png')
+    plt.savefig(save_path, dpi=150)
+    plt.close(fig)
+    print(f"[out]  Saved mode amplitude plot → {save_path}")
 
 
 # ======================================================================================================
@@ -369,7 +440,7 @@ def parse_args():
     ap.add_argument("--output_folder",     required=True,  help="Output folder for .vtp and .npz files")
     ap.add_argument("--case_name",         required=True,  help="Case name prefix for output files")
     ap.add_argument("--slice_xcoord",      required=True,  type=float, help="Axial coordinate of the slice (mesh units)")
-    ap.add_argument("--n_circumferential", required=True,  type=int,   help="Number of evenly-spaced circumferential sample points")
+    ap.add_argument("--n_wallNodes",       required=True,  type=int,   help="Number of evenly-spaced sample points on the wall")
     ap.add_argument("--pipe_axis",         type=int,       default=0,  choices=[0, 1, 2], help="Axis along which the pipe runs: 0=X, 1=Y, 2=Z (default: 0)")
     ap.add_argument("--pipe_diameter",     type=float,     default=None, help="Pipe inner diameter [mesh units]. Estimated from bounding box if omitted.")
     # Step 2 — CFD results / pressure extraction
@@ -378,11 +449,13 @@ def parse_args():
     ap.add_argument("--period_seconds",    type=float,     default=1.0, help="Flow period [s] (default: 1.0)")
     ap.add_argument("--timesteps_per_cyc", type=int,       default=None, help="Timesteps per cycle (parsed from folder name '_ts<int>' if omitted)")
     ap.add_argument("--save_freq",         type=int,       default=None, help="Save frequency: every Nth timestep saved (parsed from folder name '_saveFreq<int>' if omitted)")
+    ap.add_argument("--n_process",         type=int,       default=max(1, mp.cpu_count() - 1), help="Number of parallel worker processes (default: n_CPUs - 1)")
     return ap.parse_args()
 
 
 def main():
     args = parse_args()
+
 
     # ------------------------------ Load mesh ----------------------------------------
     mesh_folder  = Path(args.mesh_folder)
@@ -405,29 +478,7 @@ def main():
     if pipe_diameter is None:
         pipe_diameter = estimate_pipe_diameter(surf_mesh, args.pipe_axis)
 
-    # ------------------------ Step 1: sample circumferential nodes -----------------------------
-    node_indices, target_angles_deg, target_coords, node_coords = sample_circumferential_nodes(
-        surf_mesh     = surf_mesh,
-        slice_xcoord   = args.slice_xcoord,
-        n_points      = args.n_circumferential,
-        pipe_diameter = pipe_diameter,
-        pipe_axis     = args.pipe_axis,
-    )
-
-    # ---- Save selected nodes as VTP ----
-    output_folder = Path(args.output_folder)
-    output_folder.mkdir(parents=True, exist_ok=True)
-
-    vtp_path = output_folder / f"{args.case_name}_slice{args.slice_xcoord}_n{args.n_circumferential}_nodes.vtp"
-    save_selected_nodes_vtp(vtp_path, node_indices, target_angles_deg,
-                            target_coords, node_coords, surf_mesh)
-
-    # ------------------------ Step 2: Extract pressure at sampled nodes -----------------------------
-
-    # Resolve vol_point_ids for the selected surface-mesh nodes
-    raw_vol_ids = surf_mesh.point_data.get('vtkOriginalPtIds', None)
-    vol_point_ids = raw_vol_ids[node_indices]
-
+    # ------------------------------ Find parameters ----------------------------------------       
     # Resolve temporal parameters
     timesteps_per_cyc = args.timesteps_per_cyc
     save_freq         = args.save_freq
@@ -443,28 +494,61 @@ def main():
     sampling_rate = timesteps_per_cyc / args.period_seconds / save_freq
     print(f"[step2] sampling_rate = {sampling_rate:.2f} Hz")
 
+
+    # ------------------------ Step 1: sample circumferential nodes -----------------------------
+    node_indices, target_angles_deg, target_coords, node_coords = sample_circumferential_nodes(
+        surf_mesh     = surf_mesh,
+        slice_xcoord   = args.slice_xcoord,
+        n_points      = args.n_wallNodes,
+        pipe_diameter = pipe_diameter,
+        pipe_axis     = args.pipe_axis,
+    )
+
+    # ---- Save selected nodes as VTP ----
+    output_folder = Path(args.output_folder)
+    output_folder.mkdir(parents=True, exist_ok=True)
+
+    vtp_path = output_folder / f"{args.case_name}_slice{args.slice_xcoord}_n{args.n_wallNodes}_nodes.vtp"
+    save_selected_nodes_vtp(vtp_path, node_indices, target_angles_deg,
+                            target_coords, node_coords, surf_mesh)
+
+    # ------------------------ Step 2: Extract pressure at sampled nodes -----------------------------
+
+    # Resolve vol_point_ids for the selected surface-mesh nodes
+    raw_vol_ids = surf_mesh.point_data.get('vtkOriginalPtIds', None)
+    vol_point_ids = raw_vol_ids[node_indices]
+
     pressure, _ = read_pressure_at_sample_nodes(
         input_folder  = Path(args.input_folder),
         vol_point_ids = vol_point_ids,
         density       = args.density,
+        n_process     = args.n_process,
     )
 
-    npz_stem = output_folder / f"{args.case_name}_slice{args.slice_xcoord}_n{args.n_circumferential}_pressure"
-    save_pressure_npz(
-        output_path       = npz_stem,
-        pressure          = pressure,
-        target_angles_deg = target_angles_deg,
-        node_indices      = node_indices,
-        vol_point_ids     = vol_point_ids,
-        node_coords       = node_coords,
-        slice_xcoord      = args.slice_xcoord,
-        sampling_rate     = sampling_rate,
-    )
+    # npz_stem = output_folder / f"{args.case_name}_slice{args.slice_xcoord}_n{args.n_wallNodes}_pressure"
+    # save_pressure_npz(
+    #     output_path       = npz_stem,
+    #     pressure          = pressure,
+    #     target_angles_deg = target_angles_deg,
+    #     node_indices      = node_indices,
+    #     vol_point_ids     = vol_point_ids,
+    #     node_coords       = node_coords,
+    #     slice_xcoord      = args.slice_xcoord,
+    #     sampling_rate     = sampling_rate,
+    # )
 
     # ------------------------ Step 3: Spatial Fourier transform (circumferential modes) ----------
     coeffs, mode_numbers = compute_spatial_fourier_coefficients(pressure)
-    # coeffs      : (n_modes, n_snapshots) complex  — amplitude of each mode at each timestep
-    # mode_numbers: [0, 1, ..., N//2]               — circumferential wavenumber index
+
+    plot_stem = output_folder / f"{args.case_name}_slice{args.slice_xcoord}_n{args.n_wallNodes}_modes"
+    plot_mode_amplitudes(
+        output_path   = plot_stem,
+        coeffs        = coeffs,
+        mode_numbers  = mode_numbers,
+        sampling_rate = sampling_rate,
+        case_name     = args.case_name,
+        slice_xcoord  = args.slice_xcoord,
+    )
 
 
 if __name__ == '__main__':
