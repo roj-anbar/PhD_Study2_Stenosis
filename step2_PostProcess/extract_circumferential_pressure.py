@@ -14,6 +14,7 @@
 # __date__:   2026-09
 # -----------------------------------------------------------------------------------------------------------------------
 
+import re
 import h5py
 import warnings
 import argparse
@@ -108,6 +109,42 @@ def estimate_pipe_diameter(surf_mesh: pv.PolyData, pipe_axis: int = 0) -> float:
     diameter  = float(np.mean(extents))
     print(f"[mesh] Pipe diameter estimated from bounding box: {diameter:.5f}")
     return diameter
+
+
+# ======================================================================================================
+# FILENAME / SIMULATION-PARAMETER UTILITIES  (reused from compute_Spectrogram_idealGeom.py)
+# ======================================================================================================
+
+def extract_timestep_from_h5_filename(h5_file: Path) -> int:
+    """Sort key: extract integer timestep from '*_ts=<int>_...' filename pattern."""
+    match = re.search(r'_ts=(\d+)', h5_file.stem)
+    if match is None:
+        raise ValueError(f"Filename '{h5_file.name}' does not contain expected '_ts=<int>' pattern.")
+    return int(match.group(1))
+
+
+def extract_sim_params_from_foldername(input_path: Path) -> tuple[int, int | None]:
+    """Parse timesteps-per-cycle and save frequency from the results folder path.
+
+    Expected patterns anywhere in the full path string:
+      '_ts<int>'       — timesteps per cycle   (e.g. 'run_ts500_...')
+      '_saveFreq<int>' — save frequency        (e.g. 'run_saveFreq10')
+
+    Returns:
+      timesteps_per_cyc : int
+      save_freq         : int or None (None if pattern absent)
+    """
+    path_str = str(input_path)
+
+    match_ts = re.search(r'_ts(\d+)', path_str)
+    if match_ts is None:
+        raise ValueError(
+            f"Folder path '{input_path}' has no '_ts<int>' pattern. "
+            "Supply --timesteps_per_cyc on the CLI instead."
+        )
+
+    match_sf = re.search(r'_saveFreq(\d+)', path_str)
+    return int(match_ts.group(1)), (int(match_sf.group(1)) if match_sf else None)
 
 
 # ======================================================================================================
@@ -215,26 +252,142 @@ def save_selected_nodes_vtp(output_path: Path,
 
 
 # ======================================================================================================
+# STEP 2 — PRESSURE EXTRACTION AT SAMPLE NODES
+# ======================================================================================================
+
+def read_pressure_at_sample_nodes(input_folder:  Path,
+                                   vol_point_ids: np.ndarray,
+                                   density:       float,
+                                   ) -> tuple[np.ndarray, list[Path]]:
+    """
+    Read pressure time-series for the N selected circumferential nodes from CFD HDF5 snapshots.
+
+    Only the rows corresponding to vol_point_ids are read from each snapshot, so memory
+    use is O(N × n_snapshots) rather than O(n_wall_nodes × n_snapshots).
+
+    Parameters
+    ----------
+    input_folder  : Path   Folder containing '*_curcyc_*up.h5' snapshot files.
+    vol_point_ids : (N,) int  Global volume-mesh point IDs for the N sample nodes.
+    density       : float  Blood density [kg/m³] — multiplied because Oasis stores p/ρ.
+
+    Returns
+    -------
+    pressure : np.ndarray  shape (N, n_snapshots) in Pa.
+    h5_files : list[Path]  Sorted list of snapshot files (for sampling-rate calculation).
+    """
+    h5_files = sorted(input_folder.glob('*_curcyc_*up.h5'),
+                      key=extract_timestep_from_h5_filename)
+    if not h5_files:
+        raise FileNotFoundError(f"No '*_curcyc_*up.h5' files found in {input_folder}")
+
+    n_snapshots = len(h5_files)
+    n_nodes     = len(vol_point_ids)
+    pressure    = np.zeros((n_nodes, n_snapshots), dtype=np.float64)
+
+    print(f"[step2] Reading {n_snapshots} snapshots for {n_nodes} nodes ...")
+    for t, f in enumerate(h5_files):
+        with h5py.File(f, 'r') as h5:
+            pressure[:, t] = np.array(h5['Solution']['p'])[vol_point_ids].ravel() * density
+
+    print(f"[step2] Pressure array shape: {pressure.shape}  (nodes × snapshots)")
+    return pressure, h5_files
+
+
+def save_pressure_npz(output_path:      Path,
+                      pressure:         np.ndarray,
+                      target_angles_deg: np.ndarray,
+                      node_indices:     np.ndarray,
+                      vol_point_ids:    np.ndarray,
+                      node_coords:      np.ndarray,
+                      slice_xcoord:     float,
+                      sampling_rate:    float,
+                      ) -> None:
+    """
+    Save circumferential pressure time-series and metadata to a compressed .npz file.
+
+    Saved arrays
+    ------------
+    pressure        : (n_nodes, n_snapshots) float64  [Pa]
+    angles_deg      : (n_nodes,)  float64             [°]
+    node_indices    : (n_nodes,)  int32               surface-mesh indices
+    vol_point_ids   : (n_nodes,)  int64               global volume-mesh point IDs
+    node_coords     : (n_nodes, 3) float64            XYZ [mesh units]
+    slice_xcoord    : scalar float                    axial coordinate of the slice
+    sampling_rate   : scalar float                    [Hz]
+    """
+    np.savez_compressed(
+        output_path,
+        pressure       = pressure.astype(np.float64),
+        angles_deg     = target_angles_deg.astype(np.float64),
+        node_indices   = node_indices.astype(np.int32),
+        vol_point_ids  = vol_point_ids.astype(np.int64),
+        node_coords    = node_coords.astype(np.float64),
+        slice_xcoord   = np.float64(slice_xcoord),
+        sampling_rate  = np.float64(sampling_rate),
+    )
+    print(f"[out]  Saved pressure time-series → {output_path}.npz")
+
+
+# ======================================================================================================
+# STEP 3 — SPATIAL FOURIER TRANSFORM (CIRCUMFERENTIAL MODES)
+# ======================================================================================================
+
+def compute_spatial_fourier_coefficients(pressure: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Compute the spatial DFT over N evenly-spaced circumferential nodes at every timestep.
+
+    Because the nodes are uniformly distributed in angle, a standard DFT gives exact
+    circumferential wavenumber decomposition with no interpolation needed.
+
+    Parameters
+    ----------
+    pressure : (N, n_snapshots)  Wall pressure [Pa] at the N sample nodes over time.
+
+    Returns
+    -------
+    coeffs     : (n_modes, n_snapshots) complex128
+                 One-sided DFT coefficients; n_modes = N // 2 + 1.
+                 Row m holds the complex amplitude of circumferential mode m at each timestep.
+                   m = 0  →  mean (axisymmetric)
+                   m = 1  →  first circumferential harmonic (single-lobe asymmetry)
+                   m = 2  →  second harmonic, etc.
+    mode_numbers : (n_modes,) int  Wavenumber indices [0, 1, ..., N//2].
+    """
+    coeffs       = np.fft.rfft(pressure, axis=0)          # (n_modes, n_snapshots), complex
+    mode_numbers = np.arange(coeffs.shape[0], dtype=int)
+    print(f"[step3] Spatial FFT: {pressure.shape[0]} nodes → {coeffs.shape[0]} modes  |  shape {coeffs.shape}")
+    return coeffs, mode_numbers
+
+
+# ======================================================================================================
 # MAIN  (Step 1: mesh loading + circumferential node sampling + VTP output)
 # ======================================================================================================
 
 def parse_args():
     ap = argparse.ArgumentParser(
-        description="Step 1: Sample N circumferential wall nodes at an axial slice.")
+        description="Extract wall-pressure time-series at N evenly-spaced circumferential nodes.")
+    # Step 1 — mesh / slice
     ap.add_argument("--mesh_folder",       required=True,  help="Folder with mesh .h5 or .xml.gz file")
-    ap.add_argument("--output_folder",     required=True,  help="Output folder for .vtp file")
+    ap.add_argument("--output_folder",     required=True,  help="Output folder for .vtp and .npz files")
     ap.add_argument("--case_name",         required=True,  help="Case name prefix for output files")
     ap.add_argument("--slice_xcoord",      required=True,  type=float, help="Axial coordinate of the slice (mesh units)")
-    ap.add_argument("--n_circumferential", required=True,  type=int, help="Number of evenly-spaced circumferential sample points")
-    ap.add_argument("--pipe_axis",         type=int, default=0, choices=[0, 1, 2], help="Axis along which the pipe runs: 0=X, 1=Y, 2=Z (default: 0 = X)")
-    ap.add_argument("--pipe_diameter",     type=float, default=None, help="Pipe inner diameter [mesh units]. Estimated from bounding box if omitted.")
+    ap.add_argument("--n_circumferential", required=True,  type=int,   help="Number of evenly-spaced circumferential sample points")
+    ap.add_argument("--pipe_axis",         type=int,       default=0,  choices=[0, 1, 2], help="Axis along which the pipe runs: 0=X, 1=Y, 2=Z (default: 0)")
+    ap.add_argument("--pipe_diameter",     type=float,     default=None, help="Pipe inner diameter [mesh units]. Estimated from bounding box if omitted.")
+    # Step 2 — CFD results / pressure extraction
+    ap.add_argument("--input_folder",      required=True,  help="Folder containing CFD '*_curcyc_*up.h5' snapshot files")
+    ap.add_argument("--density",           type=float,     default=1057, help="Blood density [kg/m³] — multiplied because Oasis stores p/ρ (default: 1057)")
+    ap.add_argument("--period_seconds",    type=float,     default=1.0, help="Flow period [s] (default: 1.0)")
+    ap.add_argument("--timesteps_per_cyc", type=int,       default=None, help="Timesteps per cycle (parsed from folder name '_ts<int>' if omitted)")
+    ap.add_argument("--save_freq",         type=int,       default=None, help="Save frequency: every Nth timestep saved (parsed from folder name '_saveFreq<int>' if omitted)")
     return ap.parse_args()
 
 
 def main():
     args = parse_args()
 
-    # ---- Load mesh ----
+    # ------------------------------ Load mesh ----------------------------------------
     mesh_folder  = Path(args.mesh_folder)
     h5_files     = list(mesh_folder.glob('*.h5'))
     xml_gz_files = list(mesh_folder.glob('*.xml.gz'))
@@ -255,7 +408,7 @@ def main():
     if pipe_diameter is None:
         pipe_diameter = estimate_pipe_diameter(surf_mesh, args.pipe_axis)
 
-    # ---- Step 1: sample circumferential nodes ----
+    # ------------------------ Step 1: sample circumferential nodes -----------------------------
     node_indices, target_angles_deg, target_coords, node_coords = sample_circumferential_nodes(
         surf_mesh     = surf_mesh,
         slice_xcoord   = args.slice_xcoord,
@@ -272,7 +425,49 @@ def main():
     save_selected_nodes_vtp(vtp_path, node_indices, target_angles_deg,
                             target_coords, node_coords, surf_mesh)
 
-    print("\nStep 1 complete. Inspect the .vtp in ParaView, then proceed to Step 2.")
+    # ------------------------ Step 2: Extract pressure at sampled nodes -----------------------------
+
+    # Resolve vol_point_ids for the selected surface-mesh nodes
+    raw_vol_ids = surf_mesh.point_data.get('vtkOriginalPtIds', None)
+    vol_point_ids = raw_vol_ids[node_indices]
+
+    # Resolve temporal parameters
+    timesteps_per_cyc = args.timesteps_per_cyc
+    save_freq         = args.save_freq
+    if timesteps_per_cyc is None or save_freq is None:
+        ts_parsed, sf_parsed = extract_sim_params_from_foldername(Path(args.input_folder))
+        if timesteps_per_cyc is None:
+            timesteps_per_cyc = ts_parsed
+            print(f"[step2] timesteps_per_cyc = {timesteps_per_cyc}  (parsed from folder name)")
+        if save_freq is None:
+            save_freq = sf_parsed
+            print(f"[step2] save_freq         = {save_freq}  (parsed from folder name)")
+
+    sampling_rate = timesteps_per_cyc / args.period_seconds / save_freq
+    print(f"[step2] sampling_rate = {sampling_rate:.2f} Hz")
+
+    pressure, _ = read_pressure_at_sample_nodes(
+        input_folder  = Path(args.input_folder),
+        vol_point_ids = vol_point_ids,
+        density       = args.density,
+    )
+
+    npz_stem = output_folder / f"{args.case_name}_slice{args.slice_xcoord}_n{args.n_circumferential}_pressure"
+    save_pressure_npz(
+        output_path       = npz_stem,
+        pressure          = pressure,
+        target_angles_deg = target_angles_deg,
+        node_indices      = node_indices,
+        vol_point_ids     = vol_point_ids,
+        node_coords       = node_coords,
+        slice_xcoord      = args.slice_xcoord,
+        sampling_rate     = sampling_rate,
+    )
+
+    # ------------------------ Step 3: Spatial Fourier transform (circumferential modes) ----------
+    coeffs, mode_numbers = compute_spatial_fourier_coefficients(pressure)
+    # coeffs      : (n_modes, n_snapshots) complex  — amplitude of each mode at each timestep
+    # mode_numbers: [0, 1, ..., N//2]               — circumferential wavenumber index
 
 
 if __name__ == '__main__':

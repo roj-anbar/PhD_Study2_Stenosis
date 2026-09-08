@@ -7,8 +7,9 @@
 # __date__   = 2026-09
 #
 # PURPOSE:
-#   - Sample N evenly-spaced circumferential wall nodes at a given axial slice of an
-#     idealized stenosis geometry, and save them as a .vtp file for ParaView inspection.
+#   - Step 1: Sample N evenly-spaced circumferential wall nodes at a given axial slice of an
+#             idealized stenosis geometry, and save them as a .vtp file for ParaView inspection.
+#   - Step 2: Read CFD pressure snapshots for those nodes and save a .npz time-series file.
 #
 # EXECUTION:
 #   sbatch extract_circumferential_pressure_job.sh
@@ -36,11 +37,19 @@ OUTPUT="$BASE_DIR/step2_PostProcess/ModalAnalysis"                        # Outp
 
 SCRIPT="$SCRATCH/My_Projects/Study2_stenosis/scripts/step2_PostProcess/extract_circumferential_pressure.py"
 
-# ---------------------------------- Slice Parameters -------------------------------------------------------------------
+# ---------------------------------- Step 1: Slice Parameters -----------------------------------------------------------
 SLICE_XCOORD=0.0          # Axial (X) coordinate of the cross-sectional slice [mesh units]
 N_POINTS=32               # Number of evenly-spaced circumferential sample points
 PIPE_AXIS=0               # Axis along which the pipe runs: 0=X, 1=Y, 2=Z
 #PIPE_DIAMETER=            # Uncomment and set if you want to override the bounding-box estimate
+
+# ---------------------------------- Step 2: CFD / Pressure Parameters --------------------------------------------------
+DENSITY=1057              # Blood density [kg/m³]  (Oasis stores p/rho; multiplied to get Pa)
+PERIOD_S=1.0              # Flow period [s]
+# TIMESTEPS_PER_CYC and SAVE_FREQ are parsed automatically from the INPUT folder name
+# (expects '_ts<int>' and '_saveFreq<int>' patterns).  Uncomment to override:
+#TIMESTEPS_PER_CYC=12000
+#SAVE_FREQ=1
 
 
 # --------------------------------- Load Modules ------------------------------------------------------------------------
@@ -61,11 +70,16 @@ export PYVISTA_OFF_SCREEN=true
 python "$SCRIPT" \
     --case_name         "$CASE"          \
     --mesh_folder       "$MESH_FOLDER"   \
+    --input_folder      "$INPUT"         \
     --output_folder     "$OUTPUT"        \
     --slice_xcoord      $SLICE_XCOORD    \
     --n_circumferential $N_POINTS        \
-    --pipe_axis         $PIPE_AXIS
+    --pipe_axis         $PIPE_AXIS       \
+    --density           $DENSITY         \
+    --period_seconds    $PERIOD_S
 #   --pipe_diameter     6.35             # uncomment to override diameter estimate
+#   --timesteps_per_cyc $TIMESTEPS_PER_CYC  # uncomment to override folder-name parse
+#   --save_freq         $SAVE_FREQ           # uncomment to override folder-name parse
 
 wait
 echo "Job finished: $(date)"
@@ -77,6 +91,7 @@ echo "Job finished: $(date)"
 python extract_circumferential_pressure.py \
     --case_name         "eccStenosis" \
     --mesh_folder       "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/data" \
+    --input_folder      "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/results/rampoffset2mLs/eccStenosis_clean_ts12000_cy6_saveFreq1" \
     --output_folder     "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess/ModalAnalysis" \
     --slice_xcoord      10.0  \
     --n_circumferential 8   \
