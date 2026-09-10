@@ -91,8 +91,8 @@ echo "Job finished: $(date)"
 python compute_modes_wallpressure.py \
     --case_name         "eccStenosis" \
     --mesh_folder       "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/data" \
-    --input_folder      "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/results/rampoffset2mLs/eccStenosis_clean_ts12000_cy6_saveFreq1" \
-    --output_folder     "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess/ModalAnalysis" \
-    --slice_xcoord_D    10.0  \
-    --n_wallNodes       32   
+    --input_folder      "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/results/rampoffset2mLs/eccStenosis_noisy_ts12000_cy6_saveFreq1" \
+    --output_folder     "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess/ModalAnalysis_wallpressure" \
+    --slice_xcoord_D    -2  \
+    --n_wallNodes       16   
 #    --pipe_axis         0

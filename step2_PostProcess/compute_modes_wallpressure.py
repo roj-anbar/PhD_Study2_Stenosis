@@ -321,7 +321,7 @@ def read_pressure_at_sample_nodes(input_folder:  Path,
     for p in procs: p.join()
 
     pressure = _view_shared_array(shared_ctype, shape).copy()
-    print(f"[step2] Pressure array shape: {pressure.shape}  (nodes × snapshots)")
+    #print(f"[step2] Pressure array shape: {pressure.shape}  (nodes × snapshots)")
     return pressure, h5_files
 
 
@@ -398,6 +398,7 @@ def plot_mode_amplitudes(output_path:   Path,
                          sampling_rate: float,
                          case_name:     str,
                          slice_xcoord:  float,
+                         pipe_diameter: float,
                          ) -> None:
     """
     Plot the time evolution of all circumferential mode amplitudes on one figure.
@@ -408,17 +409,18 @@ def plot_mode_amplitudes(output_path:   Path,
     n_snapshots = coeffs.shape[1]
     time        = np.arange(n_snapshots) / sampling_rate   # [s]
     inlet_flowrate = time*2 + 2
-    cmap   = plt.get_cmap('tab10')
+    cmap   = plt.get_cmap('Set2')
 
     fig, ax = plt.subplots(figsize=(10, 5))
-    fig.suptitle(f"{case_name}  |  slice x={slice_xcoord}  |  Wall-pressure mode amplitudes", fontsize=13, fontweight='bold')
+    fig.suptitle(f"{case_name}  |  slice x={slice_xcoord/pipe_diameter}D  |  Wall-pressure mode amplitudes", fontsize=13, fontweight='bold')
 
-    for m in mode_numbers[1:5]:
-        ax.plot(inlet_flowrate, amplitude[m, :], color=cmap((m - 1) % 10), linewidth=2, label=f'm = {m}')
+    for m in mode_numbers[1:3]:
+        ax.plot(inlet_flowrate, amplitude[m, :], color=cmap((m - 1) % 10), linewidth=1, label=f'm = {m}')
 
+    ax.set_ylim([0,40])
     ax.set_xlabel('Inlet Flowrate [mL/s]', fontweight='bold')
     ax.set_ylabel('Amplitude [Pa]', fontweight='bold')
-    ax.legend(loc='upper left', fontsize=8, ncol=1)
+    ax.legend(loc='upper left', fontsize=8)
     ax.tick_params(direction='in')
 
     plt.tight_layout()
@@ -512,8 +514,7 @@ def main():
     output_folder.mkdir(parents=True, exist_ok=True)
 
     vtp_path = output_folder / f"{args.case_name}_slice{args.slice_xcoord_D}D_n{args.n_wallNodes}_nodes.vtp"
-    save_selected_nodes_vtp(vtp_path, node_indices, target_angles_deg,
-                            target_coords, node_coords, surf_mesh)
+    #save_selected_nodes_vtp(vtp_path, node_indices, target_angles_deg, target_coords, node_coords, surf_mesh)
 
     # ------------------------ Step 2: Extract pressure at sampled nodes -----------------------------
 
@@ -551,6 +552,7 @@ def main():
         sampling_rate = sampling_rate,
         case_name     = args.case_name,
         slice_xcoord  = slice_xcoord,
+        pipe_diameter = pipe_diameter,
     )
 
 
