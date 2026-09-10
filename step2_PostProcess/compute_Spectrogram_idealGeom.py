@@ -835,7 +835,7 @@ def plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data
     # ------------------------ Subplot 0: Spectrogram ----------------------------
     spectrogram = ax[0].pcolormesh(x_vals, freqs, spectrogram_signal, shading='gouraud', cmap='inferno')
     # Set the limit for power colormap
-    #spectrogram.set_clim(analysis_params['SPL_db_min'], analysis_params['SPL_db_max'])
+    spectrogram.set_clim(analysis_params['SPL_db_min'], analysis_params['SPL_db_max'])
 
     ax[0].set_ylabel('Frequency (Hz)',   fontweight='bold', fontsize=font_size, labelpad=10)
     ax[0].set_ylim([0, 2000]) #analysis_params['freq_max']])
@@ -850,13 +850,13 @@ def plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data
     ax[1].plot(x_vals, spectral_metrics['mean_power_midFreq'],  label='mid-freq',  linewidth = 4, color='tab:blue') #deepskyblue
     ax[1].plot(x_vals, spectral_metrics['mean_power_highFreq'], label='high-freq', linewidth = 4, color='tab:red') #'mediumblue'
 
-    #ax[1].set_ylim([-1, analysis_params['SPL_db_max']])
+    ax[1].set_ylim([-1, analysis_params['SPL_db_max']])
     ax[1].set_ylabel('Mean SPL power (dB)', fontweight='bold', labelpad=20, fontsize=font_size)
-    #ax[1].legend(loc = 'upper left', fontsize=font_size)
+    ax[1].legend(loc = 'upper left', fontsize=font_size)
 
     # ------------------------ Subplot 2: Spectral Centroid ----------------------------
     ax[2].plot(x_vals, spectral_metrics['centroid_freq'], linewidth = 4, color='black')
-    ax[2].set_ylim([-1, 500])
+    ax[2].set_ylim([-1, 2000])
     ax[2].set_ylabel('Spectral Centroid (Hz)', fontweight='bold', fontsize=font_size, labelpad=10)
 
 
@@ -1032,13 +1032,19 @@ def main():
     mesh_folder   = Path(args.mesh_folder)
     output_folder = Path(f'{args.output_folder}/Spectrogram_{args.spec_quantity}')
     
+    input_folder_str = str(input_folder).lower()
+    if 'clean' in input_folder_str: noise_label = 'clean'
+    elif 'noisy' in input_folder_str: noise_label = 'noisy'
+    else: noise_label = None
+    folder_prefix = f'{noise_label}' if noise_label else ''
+
     # Create paths
     if not Path(output_folder).exists():
         Path(output_folder).mkdir(parents=True, exist_ok=True)
 
-    output_folder_files = Path(f"{output_folder}/window{args.window_length}_overlap{args.overlap_fraction}/files")
-    output_folder_imgs  = Path(f"{output_folder}/window{args.window_length}_overlap{args.overlap_fraction}/imgs")
-    output_folder_ROIs  = Path(f"{output_folder}/window{args.window_length}_overlap{args.overlap_fraction}/ROIs")
+    output_folder_files = Path(f"{output_folder}/{folder_prefix}_window{args.window_length}_overlap{args.overlap_fraction}/files")
+    output_folder_imgs  = Path(f"{output_folder}/{folder_prefix}_window{args.window_length}_overlap{args.overlap_fraction}/imgs")
+    output_folder_ROIs  = Path(f"{output_folder}/{folder_prefix}_window{args.window_length}_overlap{args.overlap_fraction}/ROIs")
     
     output_folder_files.mkdir(parents=True, exist_ok=True)
     output_folder_imgs.mkdir(parents=True, exist_ok=True)
