@@ -38,7 +38,7 @@ OUTPUT="$BASE_DIR/step2_PostProcess/ModalAnalysis"                        # Outp
 SCRIPT="$SCRATCH/My_Projects/Study2_stenosis/scripts/step2_PostProcess/compute_modes_wallpressure.py"
 
 # ---------------------------------- Step 1: Slice Parameters -----------------------------------------------------------
-SLICE_XCOORD_D=10.0       # Axial (X) coordinate of the cross-sectional slice relative to pipe parameter (e.g. 10 → x = 10 × D)
+SLICE_XCOORD_D="8.0 10.0 12.0"  # Space-separated list of axial slice positions [D units]; one figure per slice
 N_POINTS=32               # Number of evenly-spaced circumferential sample points
 PIPE_AXIS=0               # Axis along which the pipe runs: 0=X, 1=Y, 2=Z
 #PIPE_DIAMETER=           # Uncomment and set if you want to override the bounding-box estimate
@@ -72,7 +72,7 @@ python "$SCRIPT" \
     --mesh_folder       "$MESH_FOLDER"   \
     --input_folder      "$INPUT"         \
     --output_folder     "$OUTPUT"        \
-    --slice_xcoord_D    $SLICE_XCOORD    \
+    --slice_xcoord_D    $SLICE_XCOORD_D  \
     --n_wallNodes       $N_POINTS        \
     --pipe_axis         $PIPE_AXIS       \
     --density           $DENSITY         \
@@ -91,8 +91,8 @@ echo "Job finished: $(date)"
 python compute_modes_wallpressure.py \
     --case_name         "eccStenosis" \
     --mesh_folder       "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/data" \
-    --input_folder      "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/results/rampoffset2mLs/eccStenosis_noisy_ts12000_cy6_saveFreq1" \
+    --input_folder      "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/results/rampoffset2mLs/eccStenosis_clean_ts12000_cy6_saveFreq1" \
     --output_folder     "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess/ModalAnalysis_wallpressure" \
-    --slice_xcoord_D    -2  \
-    --n_wallNodes       16   
+    --slice_xcoord_D    -2 0 3 10 18  \
+    --n_wallNodes       16
 #    --pipe_axis         0

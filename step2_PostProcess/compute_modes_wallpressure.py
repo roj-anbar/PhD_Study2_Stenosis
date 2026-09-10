@@ -411,16 +411,16 @@ def plot_mode_amplitudes(output_path:   Path,
     inlet_flowrate = time*2 + 2
     cmap   = plt.get_cmap('Set2')
 
-    fig, ax = plt.subplots(figsize=(10, 5))
-    fig.suptitle(f"{case_name}  |  slice x={slice_xcoord/pipe_diameter}D  |  Wall-pressure mode amplitudes", fontsize=13, fontweight='bold')
+    fig, ax = plt.subplots(figsize=(6, 5))
+    fig.suptitle(f"{case_name}  |  slice x={slice_xcoord/pipe_diameter}D  |  Wall-pressure mode amplitudes", fontsize=16, fontweight='bold')
 
-    for m in mode_numbers[1:3]:
+    for m in mode_numbers[1:4]:
         ax.plot(inlet_flowrate, amplitude[m, :], color=cmap((m - 1) % 10), linewidth=1, label=f'm = {m}')
 
     ax.set_ylim([0,40])
-    ax.set_xlabel('Inlet Flowrate [mL/s]', fontweight='bold')
-    ax.set_ylabel('Amplitude [Pa]', fontweight='bold')
-    ax.legend(loc='upper left', fontsize=8)
+    ax.set_xlabel('Inlet Flowrate [mL/s]', fontsize=14, fontweight='bold')
+    ax.set_ylabel('Amplitude [Pa]', fontsize=14, fontweight='bold')
+    ax.legend(loc='upper left', fontsize=12)
     ax.tick_params(direction='in')
 
     plt.tight_layout()
@@ -441,7 +441,7 @@ def parse_args():
     ap.add_argument("--mesh_folder",       required=True,  help="Folder with mesh .h5 or .xml.gz file")
     ap.add_argument("--output_folder",     required=True,  help="Output folder for .vtp and .npz files")
     ap.add_argument("--case_name",         required=True,  help="Case name prefix for output files")
-    ap.add_argument("--slice_xcoord_D",    required=True,  type=float, help="Axial position of the slice in pipe-diameter units (e.g. 10 → x = 10 × D)")
+    ap.add_argument("--slice_xcoord_D",    required=True,  type=float, nargs='+', help="Axial position(s) of the slice in pipe-diameter units (e.g. 10 or 8 10 12); one figure per slice")
     ap.add_argument("--n_wallNodes",       required=True,  type=int,   help="Number of evenly-spaced sample points on the wall")
     ap.add_argument("--pipe_axis",         type=int,       default=0,  choices=[0, 1, 2], help="Axis along which the pipe runs: 0=X, 1=Y, 2=Z (default: 0)")
     ap.add_argument("--pipe_diameter",     type=float,     default=None, help="Pipe inner diameter [mesh units]. Estimated from bounding box if omitted.")
@@ -480,11 +480,8 @@ def main():
     if pipe_diameter is None:
         pipe_diameter = estimate_pipe_diameter(surf_mesh, args.pipe_axis)
 
-    slice_xcoord = args.slice_xcoord_D * pipe_diameter
-    print(f"[step1] slice_xcoord = {args.slice_xcoord_D} D = {slice_xcoord:.5f} (mesh units)")
-
-    # ------------------------------ Find parameters ----------------------------------------       
-    # Resolve temporal parameters
+    # ------------------------------ Find parameters ----------------------------------------
+    # Resolve temporal parameters (shared across all slices)
     timesteps_per_cyc = args.timesteps_per_cyc
     save_freq         = args.save_freq
     if timesteps_per_cyc is None or save_freq is None:
@@ -499,61 +496,64 @@ def main():
     sampling_rate = timesteps_per_cyc / args.period_seconds / save_freq
     print(f"[step2] sampling_rate = {sampling_rate:.2f} Hz")
 
-
-    # ------------------------ Step 1: sample circumferential nodes -----------------------------
-    node_indices, target_angles_deg, target_coords, node_coords = sample_circumferential_nodes(
-        surf_mesh     = surf_mesh,
-        slice_xcoord  = slice_xcoord,
-        n_points      = args.n_wallNodes,
-        pipe_diameter = pipe_diameter,
-        pipe_axis     = args.pipe_axis,
-    )
-
-    # ---- Save selected nodes as VTP ----
     output_folder = Path(args.output_folder)
     output_folder.mkdir(parents=True, exist_ok=True)
 
-    vtp_path = output_folder / f"{args.case_name}_slice{args.slice_xcoord_D}D_n{args.n_wallNodes}_nodes.vtp"
-    #save_selected_nodes_vtp(vtp_path, node_indices, target_angles_deg, target_coords, node_coords, surf_mesh)
+    # ---- Loop over each requested slice ----
+    for slice_xcoord_D in args.slice_xcoord_D:
+        slice_xcoord = slice_xcoord_D * pipe_diameter
+        print(f"\n[step1] slice_xcoord = {slice_xcoord_D} D = {slice_xcoord:.5f} (mesh units)")
 
-    # ------------------------ Step 2: Extract pressure at sampled nodes -----------------------------
+        # ------------------------ Step 1: sample circumferential nodes -----------------------------
+        node_indices, target_angles_deg, target_coords, node_coords = sample_circumferential_nodes(
+            surf_mesh     = surf_mesh,
+            slice_xcoord  = slice_xcoord,
+            n_points      = args.n_wallNodes,
+            pipe_diameter = pipe_diameter,
+            pipe_axis     = args.pipe_axis,
+        )
 
-    # Resolve vol_point_ids for the selected surface-mesh nodes
-    raw_vol_ids = surf_mesh.point_data.get('vtkOriginalPtIds', None)
-    vol_point_ids = raw_vol_ids[node_indices]
+        # ---- Save selected nodes as VTP ----
+        vtp_path = output_folder / f"{args.case_name}_slice{slice_xcoord_D}D_n{args.n_wallNodes}_nodes.vtp"
+        #save_selected_nodes_vtp(vtp_path, node_indices, target_angles_deg, target_coords, node_coords, surf_mesh)
 
-    pressure, _ = read_pressure_at_sample_nodes(
-        input_folder  = Path(args.input_folder),
-        vol_point_ids = vol_point_ids,
-        density       = args.density,
-        n_process     = args.n_process,
-    )
+        # ------------------------ Step 2: Extract pressure at sampled nodes -----------------------------
 
-    # npz_stem = output_folder / f"{args.case_name}_slice{args.slice_xcoord}_n{args.n_wallNodes}_pressure"
-    # save_pressure_npz(
-    #     output_path       = npz_stem,
-    #     pressure          = pressure,
-    #     target_angles_deg = target_angles_deg,
-    #     node_indices      = node_indices,
-    #     vol_point_ids     = vol_point_ids,
-    #     node_coords       = node_coords,
-    #     slice_xcoord      = args.slice_xcoord,
-    #     sampling_rate     = sampling_rate,
-    # )
+        raw_vol_ids   = surf_mesh.point_data.get('vtkOriginalPtIds', None)
+        vol_point_ids = raw_vol_ids[node_indices]
 
-    # ------------------------ Step 3: Spatial Fourier transform (circumferential modes) ----------
-    coeffs, mode_numbers = compute_spatial_fourier_coefficients(pressure)
+        pressure, _ = read_pressure_at_sample_nodes(
+            input_folder  = Path(args.input_folder),
+            vol_point_ids = vol_point_ids,
+            density       = args.density,
+            n_process     = args.n_process,
+        )
 
-    plot_save_path = output_folder / f"{args.case_name}_slice{args.slice_xcoord_D}D_n{args.n_wallNodes}_modes"
-    plot_mode_amplitudes(
-        output_path   = plot_save_path,
-        coeffs        = coeffs,
-        mode_numbers  = mode_numbers,
-        sampling_rate = sampling_rate,
-        case_name     = args.case_name,
-        slice_xcoord  = slice_xcoord,
-        pipe_diameter = pipe_diameter,
-    )
+        # npz_stem = output_folder / f"{args.case_name}_slice{slice_xcoord_D}D_n{args.n_wallNodes}_pressure"
+        # save_pressure_npz(
+        #     output_path       = npz_stem,
+        #     pressure          = pressure,
+        #     target_angles_deg = target_angles_deg,
+        #     node_indices      = node_indices,
+        #     vol_point_ids     = vol_point_ids,
+        #     node_coords       = node_coords,
+        #     slice_xcoord      = slice_xcoord,
+        #     sampling_rate     = sampling_rate,
+        # )
+
+        # ------------------------ Step 3: Spatial Fourier transform (circumferential modes) ----------
+        coeffs, mode_numbers = compute_spatial_fourier_coefficients(pressure)
+
+        plot_save_path = output_folder / f"{args.case_name}_slice{slice_xcoord_D}D_n{args.n_wallNodes}_modes"
+        plot_mode_amplitudes(
+            output_path   = plot_save_path,
+            coeffs        = coeffs,
+            mode_numbers  = mode_numbers,
+            sampling_rate = sampling_rate,
+            case_name     = args.case_name,
+            slice_xcoord  = slice_xcoord,
+            pipe_diameter = pipe_diameter,
+        )
 
 
 if __name__ == '__main__':
