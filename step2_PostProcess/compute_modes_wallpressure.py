@@ -411,15 +411,15 @@ def plot_mode_amplitudes(output_path:   Path,
     inlet_flowrate = time*2 + 2
     cmap   = plt.get_cmap('Set2')
 
-    fig, ax = plt.subplots(figsize=(6, 5))
-    fig.suptitle(f"{case_name}  |  slice x={slice_xcoord/pipe_diameter}D  |  Wall-pressure mode amplitudes", fontsize=16, fontweight='bold')
+    fig, ax = plt.subplots(figsize=(6, 4))
+    fig.suptitle(f"slice x={slice_xcoord/pipe_diameter}D", fontsize=14, fontweight='bold')
 
     for m in mode_numbers[1:4]:
         ax.plot(inlet_flowrate, amplitude[m, :], color=cmap((m - 1) % 10), linewidth=1, label=f'm = {m}')
 
     ax.set_ylim([0,40])
-    ax.set_xlabel('Inlet Flowrate [mL/s]', fontsize=14, fontweight='bold')
-    ax.set_ylabel('Amplitude [Pa]', fontsize=14, fontweight='bold')
+    ax.set_xlabel('Inlet Flowrate [mL/s]', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Amplitude [Pa]', fontsize=12, fontweight='bold')
     ax.legend(loc='upper left', fontsize=12)
     ax.tick_params(direction='in')
 
@@ -496,8 +496,14 @@ def main():
     sampling_rate = timesteps_per_cyc / args.period_seconds / save_freq
     print(f"[step2] sampling_rate = {sampling_rate:.2f} Hz")
 
-    output_folder = Path(args.output_folder)
+    input_folder_str = str(args.input_folder)
+    if 'clean' in input_folder_str:   noise_label = 'clean'
+    elif 'noisy' in input_folder_str: noise_label = 'noisy'
+    else:                             noise_label = None
+
+    output_folder = Path(args.output_folder) / noise_label if noise_label else Path(args.output_folder)
     output_folder.mkdir(parents=True, exist_ok=True)
+    print(f"[out]  Output folder: {output_folder}")
 
     # ---- Loop over each requested slice ----
     for slice_xcoord_D in args.slice_xcoord_D:
