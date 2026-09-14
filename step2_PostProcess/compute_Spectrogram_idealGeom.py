@@ -72,7 +72,9 @@ import multiprocessing as mp
 from multiprocessing import sharedctypes
 from collections import defaultdict
 
-import re   # for text manupulation
+import re        # for text manupulation
+import subprocess
+import shutil
 
 import vtk
 import numpy as np
@@ -899,6 +901,109 @@ def plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data
     plt.close(fig)
 
 
+def make_spectrogram_sweep_video(
+    output_path: Path,
+    surf_mesh: pv.PolyData,
+    wall_pressure: np.ndarray,
+    pipe_diameter: float,
+    pipe_axis: int,
+    period_seconds: float,
+    timesteps_per_cyc: int,
+    save_freq: int,
+    STFT_params: dict,
+    spectral_analysis_params: dict,
+    case_name: str = "",
+):
+    """
+    Create a video of spectrograms at thin axial slices sweeping from inlet to outlet.
+    Saves PNG frames to a temp directory, stitches them with ffmpeg, then cleans up.
+    """
+    # ---- Hard-coded sweep parameters ----
+    slice_width_D = 0.5   # slice window width [multiples of pipe diameter D]
+    step_D        = 0.1  # step between consecutive slice centres [multiples of D]
+    fps           = 10     # output video frame rate
+    freq_ylim     = 2000  # Hz — y-axis upper limit for spectrogram panel
+    keep_frames   = False # set True to keep individual PNG frames after video is written
+    # -------------------------------------
+
+    axis_label  = {0: "X", 1: "Y", 2: "Z"}.get(pipe_axis, str(pipe_axis))
+    wall_coords = surf_mesh.points[:, pipe_axis]
+    x_min = wall_coords.min()
+    x_max = wall_coords.max()
+
+    slice_width = slice_width_D * pipe_diameter
+    step        = step_D * pipe_diameter
+
+    centers = np.arange(x_min + slice_width / 2,
+                        x_max - slice_width / 2 + step * 0.5,
+                        step)
+
+    print(f"\n[video] Sweep {axis_label}=[{x_min:.4f}, {x_max:.4f}]  "
+          f"slice_width={slice_width_D}D  step={step_D}D  n_slices={len(centers)}")
+
+    stft_params = dict(STFT_params)
+    stft_params["sampling_rate"] = timesteps_per_cyc / period_seconds / save_freq
+
+    frames_dir = output_path.parent / (output_path.stem + "_frames")
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    frame_count = 0
+    for i, cx in enumerate(centers):
+        x_lo = cx - slice_width / 2
+        x_hi = cx + slice_width / 2
+
+        try:
+            pids = extract_wall_points_perROI_idealGeom(surf_mesh, x_lo, x_hi, pipe_axis=pipe_axis)
+        except ValueError:
+            print(f"  [video] slice {i+1}/{len(centers)}: no wall points in "
+                  f"[{x_lo/pipe_diameter:+.2f}D, {x_hi/pipe_diameter:+.2f}D], skipping")
+            continue
+
+        spec_data = calculate_mean_spectrogram(var_name = "wallpressure", var_array = wall_pressure[pids, :], STFT_params = stft_params)
+        spec_filt = filter_raw_spectrogram(spec_data, spectral_analysis_params)
+
+        x_vals, x_min_plot, x_cut, x_label, _ = prepare_plot_xaxis(spec_filt, np.full(3, np.nan), spectral_analysis_params, pipe_diameter)
+
+        fig, ax = plt.subplots(figsize=(10, 5))
+        pcm = ax.pcolormesh(x_vals, spec_filt['freqs'], spec_filt['power_avg_dB'], shading='gouraud', cmap='inferno')
+        pcm.set_clim(spectral_analysis_params['SPL_db_min'], spectral_analysis_params['SPL_db_max'])
+        ax.set_ylim([0, freq_ylim])
+        ax.set_xlim([x_min_plot, x_cut])
+        ax.set_ylabel('Frequency (Hz)', fontweight='bold', fontsize=14)
+        ax.set_xlabel(x_label, fontweight='bold', fontsize=14)
+        ax.set_title(f"{axis_label} = {cx/pipe_diameter:+.2f}D", fontweight='bold', fontsize=12)
+        cbar = fig.colorbar(pcm, ax=ax)
+        cbar.set_label('SPL (dB)', rotation=270, labelpad=15, fontsize=13, fontweight='bold')
+
+        plt.tight_layout()
+        plt.savefig(frames_dir / f"frame_{frame_count:04d}.png", dpi=100)
+        plt.close(fig)
+
+        print(f"  [video] frame {frame_count+1} | slice {i+1}/{len(centers)}: "
+              f"centre={cx/pipe_diameter:+.2f}D  n_points={pids.size}")
+        frame_count += 1
+
+    if frame_count == 0:
+        print("[video] No frames were saved — aborting video creation.")
+        return
+
+    # Stitch PNG frames into mp4 with ffmpeg
+    cmd = ["ffmpeg", "-y",
+            "-r", str(fps),
+            "-i", str(frames_dir / "frame_%04d.png"),
+            "-vcodec", "libx264",
+            "-pix_fmt", "yuv420p",
+            str(output_path),
+        ]
+    subprocess.run(cmd, check=True, capture_output=True)
+    print(f"[video] Saved: {output_path}")
+
+
+    if not keep_frames:
+        shutil.rmtree(frames_dir)
+        print(f"[video] Cleaned up frames directory.")
+
+
 def compute_and_save_spectrogram_perROI_for_idealGeom(
         case_name: str,
         output_folder_files: Path,
@@ -993,7 +1098,8 @@ def parse_args():
     # Idealized-geometry parameters
     ap.add_argument("--pipe_diameter",      type=float, default=None, help="Pipe inner diameter [mesh units]. If omitted, estimated from the mesh bounding box.")
     ap.add_argument("--pipe_axis",          type=int,   default=0,    choices=[0, 1, 2], help="Axis along which the pipe centerline runs: 0=X, 1=Y, 2=Z (default: 0)")
-    ap.add_argument("--flag_save_ROI",      action="store_true",      help="Save each region's wall surface as a .vtp file")
+    ap.add_argument("--flag_save_ROI",       action="store_true",      help="Save each region's wall surface as a .vtp file")
+    ap.add_argument("--flag_save_video",     action="store_true",      help="Create an inlet-to-outlet spectrogram sweep video (default: off)")
 
 
     # Spectrogram specific parameters (including Short-time Fourier Transform control)
@@ -1187,7 +1293,21 @@ def main():
 
         print(f"\nFinished computing spectrograms for all idealized regions.")
 
-
+    if args.flag_save_video:
+        video_path = output_folder_imgs / f"{args.case_name}_sweep_video.mp4"
+        make_spectrogram_sweep_video(
+            output_path              = video_path,
+            surf_mesh                = surf_mesh,
+            wall_pressure            = spec_quantity_array,
+            pipe_diameter            = args.pipe_diameter,
+            pipe_axis                = args.pipe_axis,
+            period_seconds           = period_seconds,
+            timesteps_per_cyc        = timesteps_per_cyc,
+            save_freq                = save_freq,
+            STFT_params              = short_time_fourier_params,
+            spectral_analysis_params = spectral_analysis_params,
+            case_name                = args.case_name,
+        )
 
 
 if __name__ == '__main__':

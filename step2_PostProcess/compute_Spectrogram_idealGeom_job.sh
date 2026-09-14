@@ -24,7 +24,7 @@
 #SBATCH --partition=debug
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=192
-#SBATCH --time=00:30:00
+#SBATCH --time=00:59:00
 #SBATCH --job-name PT_Spectrogram
 #SBATCH --output=PT_Spectrogram_%j.txt
 
@@ -84,7 +84,8 @@ python "$SCRIPT" \
     --flowrate_min          3 \
     --flowrate_max          13.5 \
     --flowrate_cut          13.5 \
-    --plots_xaxis_variable  "reynolds" 
+    --plots_xaxis_variable  "reynolds" \
+    --flag_save_video       
 #    --flag_save_ROI         
 
 
@@ -93,19 +94,20 @@ python "$SCRIPT" \
 # Note1: You HAVE to load the modules first from terminal then run below
 # Note2: You HAVE to comment this part if submitting this file through sbatch
 
-python compute_Spectrogram_idealGeom.py \
-    --case_name             "eccStenosis" \
-    --input_folder          "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/results/rampoffset2mLs/eccStenosis_noisy_ts12000_cy6_saveFreq1" \
-    --mesh_folder           "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/data" \
-    --output_folder         "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess" \
-    --spec_regions_csv      "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess/configs/eccStenosis_spectrogram_regions.csv" \
-    --spec_quantity         "wallpressure" \
-    --window_length         2000 \
-    --power_SPL_db_min      0     \
-    --flowrate_min          3 \
-    --flowrate_max          13.5 \
-    --flowrate_cut          13.5 \
-    --plots_xaxis_variable  "reynolds"     
+# python compute_Spectrogram_idealGeom.py \
+#     --case_name             "eccStenosis" \
+#     --input_folder          "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/results/rampoffset2mLs/eccStenosis_noisy_ts12000_cy6_saveFreq1" \
+#     --mesh_folder           "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/data" \
+#     --output_folder         "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess" \
+#     --spec_regions_csv      "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess/configs/eccStenosis_spectrogram_regions.csv" \
+#     --spec_quantity         "wallpressure" \
+#     --window_length         2000 \
+#     --power_SPL_db_min      0     \
+#     --flowrate_min          3 \
+#     --flowrate_max          13.5 \
+#     --flowrate_cut          13.5 \
+#     --plots_xaxis_variable  "reynolds"  \
+#     --flag_save_video       
 
 #--pipe_diameter         6.35 \
 wait
