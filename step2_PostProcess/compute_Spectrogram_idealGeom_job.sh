@@ -24,7 +24,7 @@
 #SBATCH --partition=debug
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=192
-#SBATCH --time=00:59:00
+#SBATCH --time=00:30:00
 #SBATCH --job-name PT_Spectrogram
 #SBATCH --output=PT_Spectrogram_%j.txt
 

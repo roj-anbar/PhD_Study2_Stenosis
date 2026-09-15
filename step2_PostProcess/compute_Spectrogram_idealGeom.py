@@ -269,7 +269,7 @@ def estimate_pipe_diameter_from_mesh(surf_mesh: pv.PolyData, pipe_axis: int = 0)
     extents   = [surf_mesh.points[:, ax].ptp() for ax in perp_axes]
     diameter  = float(np.mean(extents))
     axis_label = {0: "X", 1: "Y", 2: "Z"}.get(pipe_axis, str(pipe_axis))
-    print(f"[mesh] Pipe diameter not defined by user, estimating from mesh directly: {diameter:.4f}")
+    print(f"[mesh] Pipe diameter not defined by user, estimating from mesh directly: {diameter:.4f} [mesh units]")
     return diameter
 
 
@@ -901,6 +901,37 @@ def plot_spectrogram_and_metrics(output_folder_imgs, case_name, spectrogram_data
     plt.close(fig)
 
 
+def _compute_pipe_silhouette(surf_mesh: pv.PolyData, pipe_axis: int, pipe_diameter: float, n_bins: int = 300):
+    """
+    Compute the 2D side-view silhouette of the wall mesh: upper and lower radial envelope
+    as a function of axial position, normalised by pipe_diameter (units of D).
+    x is zeroed at the mesh inlet (x_mesh_min).
+    Returns: x_D, y_upper_D, y_lower_D, x_mesh_min
+    """
+    coords    = surf_mesh.points
+    x_raw     = coords[:, pipe_axis]
+    perp_axis = next(i for i in range(3) if i != pipe_axis)
+    y_raw     = coords[:, perp_axis]
+
+    x_mesh_min, x_mesh_max = x_raw.min(), x_raw.max()
+    bin_edges = np.linspace(x_mesh_min, x_mesh_max, n_bins + 1)
+    x_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+    y_upper = np.full(n_bins, np.nan)
+    y_lower = np.full(n_bins, np.nan)
+    for k in range(n_bins):
+        mask = (x_raw >= bin_edges[k]) & (x_raw < bin_edges[k + 1])
+        if mask.any():
+            y_upper[k] = y_raw[mask].max()
+            y_lower[k] = y_raw[mask].min()
+
+    x_D       = (x_centers - x_mesh_min) / pipe_diameter
+    y_upper_D = y_upper    / pipe_diameter
+    y_lower_D = y_lower    / pipe_diameter
+
+    return x_D, y_upper_D, y_lower_D, x_mesh_min
+
+
 def make_spectrogram_sweep_video(
     output_path: Path,
     surf_mesh: pv.PolyData,
@@ -920,13 +951,13 @@ def make_spectrogram_sweep_video(
     """
     # ---- Hard-coded sweep parameters ----
     slice_width_D = 0.5   # slice window width [multiples of pipe diameter D]
-    step_D        = 0.1  # step between consecutive slice centres [multiples of D]
-    fps           = 10     # output video frame rate
+    step_D        = 0.1   # step between consecutive slice centres [multiples of D]
+    fps           = 10    # output video frame rate
     freq_ylim     = 2000  # Hz — y-axis upper limit for spectrogram panel
     keep_frames   = False # set True to keep individual PNG frames after video is written
     # -------------------------------------
 
-    axis_label  = {0: "X", 1: "Y", 2: "Z"}.get(pipe_axis, str(pipe_axis))
+    axis_label  = {0: "x", 1: "y", 2: "z"}.get(pipe_axis, str(pipe_axis))
     wall_coords = surf_mesh.points[:, pipe_axis]
     x_min = wall_coords.min()
     x_max = wall_coords.max()
@@ -944,6 +975,10 @@ def make_spectrogram_sweep_video(
     stft_params = dict(STFT_params)
     stft_params["sampling_rate"] = timesteps_per_cyc / period_seconds / save_freq
 
+    # Pre-compute pipe silhouette once (upper/lower wall envelope in D units)
+    sil_x_D, sil_y_upper_D, sil_y_lower_D, x_mesh_min = _compute_pipe_silhouette(surf_mesh, pipe_axis, pipe_diameter)
+    sil_x_total_D = sil_x_D[-1]  # total pipe length in D
+
     frames_dir = output_path.parent / (output_path.stem + "_frames")
     frames_dir.mkdir(parents=True, exist_ok=True)
 
@@ -959,28 +994,53 @@ def make_spectrogram_sweep_video(
                   f"[{x_lo/pipe_diameter:+.2f}D, {x_hi/pipe_diameter:+.2f}D], skipping")
             continue
 
-        spec_data = calculate_mean_spectrogram(var_name = "wallpressure", var_array = wall_pressure[pids, :], STFT_params = stft_params)
+        spec_data = calculate_mean_spectrogram(
+            var_name    = "wallpressure",
+            var_array   = wall_pressure[pids, :],
+            STFT_params = stft_params,
+        )
         spec_filt = filter_raw_spectrogram(spec_data, spectral_analysis_params)
 
-        x_vals, x_min_plot, x_cut, x_label, _ = prepare_plot_xaxis(spec_filt, np.full(3, np.nan), spectral_analysis_params, pipe_diameter)
+        x_vals, x_min_plot, x_cut, x_label, _ = prepare_plot_xaxis(
+            spec_filt, np.full(3, np.nan), spectral_analysis_params, pipe_diameter)
 
-        fig, ax = plt.subplots(figsize=(10, 5))
-        pcm = ax.pcolormesh(x_vals, spec_filt['freqs'], spec_filt['power_avg_dB'], shading='gouraud', cmap='inferno')
+        # Slice position in D units (relative to mesh inlet)
+        cx_D   = (cx   - x_mesh_min) / pipe_diameter
+        x_lo_D = (x_lo - x_mesh_min) / pipe_diameter
+        x_hi_D = (x_hi - x_mesh_min) / pipe_diameter
+
+        # ---- 2-panel figure: geometry silhouette (top) + spectrogram (bottom) ----
+        fig, ax_spec = plt.subplots(1, 1, figsize=(8, 6))
+        #fig, (ax_geom, ax_spec) = plt.subplots(1, 1, figsize=(10, 8),gridspec_kw={'height_ratios': [1, 2.5], 'hspace': 0.4})
+
+        # --- Top panel: pipe silhouette + moving slice band ---
+        # ax_geom.fill_between(sil_x_D, sil_y_upper_D, sil_y_lower_D, alpha=0.1, color='steelblue')
+        # ax_geom.plot(sil_x_D, sil_y_upper_D, color='steelblue', lw=1.5)
+        # ax_geom.plot(sil_x_D, sil_y_lower_D, color='steelblue', lw=1.5)
+        # ax_geom.axvline(cx_D, color='crimson', lw=1.5) # show the slice
+        # #ax_geom.axvspan(x_lo_D, x_hi_D, alpha=0.45, color='crimson') # show the slice edges
+        # ax_geom.set_xlim([0, sil_x_total_D])
+        # ax_geom.set_xlabel(f'Axial position ({axis_label} / D)', fontsize=12, fontweight='bold')
+        # ax_geom.set_ylabel('r / D', fontsize=12, fontweight='bold')
+        # ax_geom.set_title(f"Slice {axis_label} = {cx_D:.2f} D", fontsize=18, fontweight='bold')
+        # ax_geom.set_aspect('equal')
+        # ax_geom.tick_params(direction='in', labelsize=9)
+
+        # --- Bottom panel: spectrogram ---
+        pcm = ax_spec.pcolormesh(x_vals, spec_filt['freqs'], spec_filt['power_avg_dB'], shading='gouraud', cmap='inferno')
         pcm.set_clim(spectral_analysis_params['SPL_db_min'], spectral_analysis_params['SPL_db_max'])
-        ax.set_ylim([0, freq_ylim])
-        ax.set_xlim([x_min_plot, x_cut])
-        ax.set_ylabel('Frequency (Hz)', fontweight='bold', fontsize=14)
-        ax.set_xlabel(x_label, fontweight='bold', fontsize=14)
-        ax.set_title(f"{axis_label} = {cx/pipe_diameter:+.2f}D", fontweight='bold', fontsize=12)
-        cbar = fig.colorbar(pcm, ax=ax)
+        ax_spec.set_ylim([0, freq_ylim])
+        ax_spec.set_xlim([x_min_plot, x_cut])
+        ax_spec.set_ylabel('Frequency (Hz)', fontweight='bold', fontsize=14)
+        ax_spec.set_xlabel(x_label,          fontweight='bold', fontsize=14)
+        ax_spec.tick_params(direction='in', labelsize=11)
+        cbar = fig.colorbar(pcm, ax=ax_spec)
         cbar.set_label('SPL (dB)', rotation=270, labelpad=15, fontsize=13, fontweight='bold')
 
-        plt.tight_layout()
         plt.savefig(frames_dir / f"frame_{frame_count:04d}.png", dpi=100)
         plt.close(fig)
 
-        print(f"  [video] frame {frame_count+1} | slice {i+1}/{len(centers)}: "
-              f"centre={cx/pipe_diameter:+.2f}D  n_points={pids.size}")
+        print(f"  [video] frame {frame_count+1} | slice {i+1}/{len(centers)}: centre={cx_D:.2f}D  n_points={pids.size}")
         frame_count += 1
 
     if frame_count == 0:
@@ -988,16 +1048,23 @@ def make_spectrogram_sweep_video(
         return
 
     # Stitch PNG frames into mp4 with ffmpeg
-    cmd = ["ffmpeg", "-y",
+    try:
+        cmd = [
+            "ffmpeg", "-y",
             "-r", str(fps),
             "-i", str(frames_dir / "frame_%04d.png"),
             "-vcodec", "libx264",
             "-pix_fmt", "yuv420p",
             str(output_path),
         ]
-    subprocess.run(cmd, check=True, capture_output=True)
-    print(f"[video] Saved: {output_path}")
-
+        subprocess.run(cmd, check=True, capture_output=True)
+        print(f"[video] Saved: {output_path}")
+    except FileNotFoundError:
+        print(f"[video] ffmpeg not found — frames kept in: {frames_dir}")
+        return
+    except subprocess.CalledProcessError as e:
+        print(f"[video] ffmpeg failed:\n{e.stderr.decode()}")
+        return
 
     if not keep_frames:
         shutil.rmtree(frames_dir)
