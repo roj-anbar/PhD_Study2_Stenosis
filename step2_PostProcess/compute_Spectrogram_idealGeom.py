@@ -943,15 +943,14 @@ def make_spectrogram_sweep_video(
     save_freq: int,
     STFT_params: dict,
     spectral_analysis_params: dict,
-    case_name: str = "",
-):
+    case_name: str = ""):
     """
     Create a video of spectrograms at thin axial slices sweeping from inlet to outlet.
     Saves PNG frames to a temp directory, stitches them with ffmpeg, then cleans up.
     """
     # ---- Hard-coded sweep parameters ----
     slice_width_D = 0.5   # slice window width [multiples of pipe diameter D]
-    step_D        = 0.1   # step between consecutive slice centres [multiples of D]
+    step_D        = 0.2   # step between consecutive slice centres [multiples of D]
     fps           = 10    # output video frame rate
     freq_ylim     = 2000  # Hz — y-axis upper limit for spectrogram panel
     keep_frames   = False # set True to keep individual PNG frames after video is written
@@ -1010,21 +1009,21 @@ def make_spectrogram_sweep_video(
         x_hi_D = (x_hi - x_mesh_min) / pipe_diameter
 
         # ---- 2-panel figure: geometry silhouette (top) + spectrogram (bottom) ----
-        fig, ax_spec = plt.subplots(1, 1, figsize=(8, 6))
-        #fig, (ax_geom, ax_spec) = plt.subplots(1, 1, figsize=(10, 8),gridspec_kw={'height_ratios': [1, 2.5], 'hspace': 0.4})
+        #fig, ax_spec = plt.subplots(1, 1, figsize=(8, 6))
+        fig, (ax_geom, ax_spec) = plt.subplots(2, 1, figsize=(10, 8), gridspec_kw={'height_ratios': [1, 2.5], 'hspace': 0.4})
 
         # --- Top panel: pipe silhouette + moving slice band ---
-        # ax_geom.fill_between(sil_x_D, sil_y_upper_D, sil_y_lower_D, alpha=0.1, color='steelblue')
-        # ax_geom.plot(sil_x_D, sil_y_upper_D, color='steelblue', lw=1.5)
-        # ax_geom.plot(sil_x_D, sil_y_lower_D, color='steelblue', lw=1.5)
-        # ax_geom.axvline(cx_D, color='crimson', lw=1.5) # show the slice
-        # #ax_geom.axvspan(x_lo_D, x_hi_D, alpha=0.45, color='crimson') # show the slice edges
-        # ax_geom.set_xlim([0, sil_x_total_D])
-        # ax_geom.set_xlabel(f'Axial position ({axis_label} / D)', fontsize=12, fontweight='bold')
-        # ax_geom.set_ylabel('r / D', fontsize=12, fontweight='bold')
-        # ax_geom.set_title(f"Slice {axis_label} = {cx_D:.2f} D", fontsize=18, fontweight='bold')
-        # ax_geom.set_aspect('equal')
-        # ax_geom.tick_params(direction='in', labelsize=9)
+        ax_geom.fill_between(sil_x_D, sil_y_upper_D, sil_y_lower_D, alpha=0.1, color='steelblue')
+        ax_geom.plot(sil_x_D, sil_y_upper_D, color='steelblue', lw=1.5)
+        ax_geom.plot(sil_x_D, sil_y_lower_D, color='steelblue', lw=1.5)
+        ax_geom.axvline(cx_D, color='crimson', lw=1.5) # show the slice
+        #ax_geom.axvspan(x_lo_D, x_hi_D, alpha=0.45, color='crimson') # show the slice edges
+        ax_geom.set_xlim([0, sil_x_total_D])
+        ax_geom.set_xlabel(f'Axial position ({axis_label} / D)', fontsize=12, fontweight='bold')
+        ax_geom.set_ylabel('r / D', fontsize=12, fontweight='bold')
+        ax_geom.set_title(f"Slice {axis_label} = {cx_D:.2f} D", fontsize=18, fontweight='bold')
+        ax_geom.set_aspect('equal')
+        ax_geom.tick_params(direction='in', labelsize=9)
 
         # --- Bottom panel: spectrogram ---
         pcm = ax_spec.pcolormesh(x_vals, spec_filt['freqs'], spec_filt['power_avg_dB'], shading='gouraud', cmap='inferno')
@@ -1034,6 +1033,7 @@ def make_spectrogram_sweep_video(
         ax_spec.set_ylabel('Frequency (Hz)', fontweight='bold', fontsize=14)
         ax_spec.set_xlabel(x_label,          fontweight='bold', fontsize=14)
         ax_spec.tick_params(direction='in', labelsize=11)
+        #ax_spec.set_title(f"Slice {axis_label} = {cx_D:.2f} D", fontsize=18, fontweight='bold')
         cbar = fig.colorbar(pcm, ax=ax_spec)
         cbar.set_label('SPL (dB)', rotation=270, labelpad=15, fontsize=13, fontweight='bold')
 
@@ -1272,11 +1272,7 @@ def main():
     print(f"\n[info] Mesh file:                         {mesh_file}")
     print(f"[info] Read CFD results from:             {input_folder}")
     print(f"[info] Write spectrograms to:             {output_folder}")
-
-    if args.spec_regions_csv is not None:
-        print(f"[info] Read spectrogram regions from:  {args.spec_regions_csv}")
-
-    print(f"[info] spec_regions_csv:               {args.spec_regions_csv}")
+    print(f"[info] Read spectrogram regions from:  {args.spec_regions_csv}")
     print(f"[info] pipe_diameter:                  {args.pipe_diameter}")
     #print(f"[info] pipe_axis:                      {args.pipe_axis} \n")
 

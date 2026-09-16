@@ -96,7 +96,7 @@ python "$SCRIPT" \
 
 # python compute_Spectrogram_idealGeom.py \
 #     --case_name             "eccStenosis" \
-#     --input_folder          "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/results/rampoffset2mLs/eccStenosis_noisy_ts12000_cy6_saveFreq1" \
+#     --input_folder          "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/results/rampoffset2mLs/eccStenosis_clean_ts12000_cy6_saveFreq1" \
 #     --mesh_folder           "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/data" \
 #     --output_folder         "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess" \
 #     --spec_regions_csv      "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess/configs/eccStenosis_spectrogram_regions.csv" \
