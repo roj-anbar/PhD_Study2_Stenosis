@@ -35,7 +35,7 @@ MESH_FOLDER="$BASE_DIR/step1_CFD/data"                                          
 INPUT="$BASE_DIR/step1_CFD/results/rampoffset2mLs/${CASE}_clean_ts12000_cy6_saveFreq1"          # Path to CFD results folder containing timeseries HDF5 files
 OUTPUT="$BASE_DIR/step2_PostProcess/ModalAnalysis"                        # Output folder for .vtp files
 
-SCRIPT="$SCRATCH/My_Projects/Study2_stenosis/scripts/step2_PostProcess/compute_modes_wallpressure.py"
+SCRIPT="$SCRATCH/My_Projects/Study2_stenosis/scripts/step2_PostProcess/compute_SpatialModes_wallpressure.py"
 
 # ---------------------------------- Step 1: Slice Parameters -----------------------------------------------------------
 SLICE_XCOORD_D="8.0 10.0 12.0"  # Space-separated list of axial slice positions [D units]; one figure per slice
