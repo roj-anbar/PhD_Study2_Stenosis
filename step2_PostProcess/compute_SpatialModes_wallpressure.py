@@ -23,6 +23,7 @@ from pathlib import Path
 import numpy as np
 import pyvista as pv
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 — registers 3D projection
 
 
 # ======================================================================================================
@@ -430,6 +431,59 @@ def plot_mode_amplitudes(output_path:   Path,
     print(f"[out]  Saved mode amplitude plot → {save_path}")
 
 
+def plot_mode_surface_3d(
+    output_path:     Path,
+    all_coeffs:      list,
+    slice_xcoords_D: np.ndarray,
+    sampling_rate:   float,
+    case_name:       str,
+    modes_to_plot:   list = None,
+) -> None:
+    """
+    3D surface: mode amplitude as a function of axial position (x/D) and inlet flowrate.
+
+    Parameters
+    ----------
+    all_coeffs      : list of (n_modes, n_snapshots) complex arrays, one entry per slice.
+    slice_xcoords_D : (n_slices,) auto-generated linspace of axial positions [x/D].
+    modes_to_plot   : circumferential mode indices to plot (default [1, 2, 3]).
+
+    Axes
+    ----
+    X : inlet flowrate [mL/s]
+    Y : x/D
+    Z : mode amplitude [Pa]
+    """
+    if modes_to_plot is None:
+        modes_to_plot = [1, 2, 3]
+
+    n_snapshots = all_coeffs[0].shape[1]
+    flowrate    = np.arange(n_snapshots) / sampling_rate * 2 + 2   # [mL/s]
+
+    X, Y = np.meshgrid(flowrate, slice_xcoords_D)                   # (n_slices, n_snapshots)
+
+    for m in modes_to_plot:
+        Z = np.vstack([np.abs(c[m]) for c in all_coeffs])           # (n_slices, n_snapshots) [Pa]
+
+        fig  = plt.figure(figsize=(9, 6))
+        ax   = fig.add_subplot(111, projection='3d')
+        surf = ax.plot_surface(X, Y, Z, cmap='viridis', alpha=0.88,
+                               linewidth=0, antialiased=True)
+        fig.colorbar(surf, ax=ax, shrink=0.5, pad=0.1, label='Amplitude [Pa]')
+
+        ax.set_xlabel('Inlet Flowrate [mL/s]', fontsize=10, labelpad=10)
+        ax.set_ylabel('x/D',                   fontsize=10, labelpad=10)
+        ax.set_zlabel('Amplitude [Pa]',         fontsize=10, labelpad=10)
+        ax.set_title(f'{case_name}  —  mode m = {m}', fontsize=12, fontweight='bold')
+        ax.tick_params(labelsize=8)
+
+        plt.tight_layout()
+        save_path = Path(str(output_path) + f'_mode{m}_surface3d.png')
+        plt.savefig(save_path, dpi=150)
+        plt.close(fig)
+        print(f"[out]  Saved 3D surface plot (mode {m}) → {save_path}")
+
+
 # ======================================================================================================
 # MAIN  (Step 1: mesh loading + circumferential node sampling + VTP output)
 # ======================================================================================================
@@ -452,6 +506,9 @@ def parse_args():
     ap.add_argument("--timesteps_per_cyc", type=int,       default=None, help="Timesteps per cycle (parsed from folder name '_ts<int>' if omitted)")
     ap.add_argument("--save_freq",         type=int,       default=None, help="Save frequency: every Nth timestep saved (parsed from folder name '_saveFreq<int>' if omitted)")
     ap.add_argument("--n_process",         type=int,       default=max(1, mp.cpu_count() - 1), help="Number of parallel worker processes (default: n_CPUs - 1)")
+    # Step 4 — optional 3D surface
+    ap.add_argument("--plot_surface_3d",   action='store_true', help="Generate 3D surface plots across auto-spaced axial slices")
+    ap.add_argument("--n_surface_slices",  type=int,       default=100, help="Number of axial slices for the 3D surface, auto-spaced from mesh bounds (default: 100)")
     return ap.parse_args()
 
 
@@ -559,6 +616,48 @@ def main():
             case_name     = args.case_name,
             slice_xcoord  = slice_xcoord,
             pipe_diameter = pipe_diameter,
+        )
+
+
+    # ---- 3D surface: auto-generate dense slice grid from mesh bounds ----
+    if args.plot_surface_3d:
+        ax_min = surf_mesh.bounds[args.pipe_axis * 2]
+        ax_max = surf_mesh.bounds[args.pipe_axis * 2 + 1]
+        surface_xcoords_D = np.linspace(ax_min / pipe_diameter,
+                                        ax_max / pipe_diameter,
+                                        args.n_surface_slices)
+        print(f"\n[surface3d] {args.n_surface_slices} slices: "
+              f"x/D in [{surface_xcoords_D[0]:.2f}, {surface_xcoords_D[-1]:.2f}]")
+
+        raw_vol_ids  = surf_mesh.point_data.get('vtkOriginalPtIds', None)
+        all_coeffs   = []
+        for i, xD in enumerate(surface_xcoords_D):
+            xcoord = xD * pipe_diameter
+            node_indices, _, _, _ = sample_circumferential_nodes(
+                surf_mesh     = surf_mesh,
+                slice_xcoord  = xcoord,
+                n_points      = args.n_wallNodes,
+                pipe_diameter = pipe_diameter,
+                pipe_axis     = args.pipe_axis,
+            )
+            vol_point_ids = raw_vol_ids[node_indices]
+            pressure, _   = read_pressure_at_sample_nodes(
+                input_folder  = Path(args.input_folder),
+                vol_point_ids = vol_point_ids,
+                density       = args.density,
+                n_process     = args.n_process,
+            )
+            coeffs, _ = compute_spatial_fourier_coefficients(pressure)
+            all_coeffs.append(coeffs)
+            print(f"[surface3d] {i + 1}/{args.n_surface_slices} done")
+
+        surface_path = output_folder / f"{args.case_name}_n{args.n_wallNodes}_modes"
+        plot_mode_surface_3d(
+            output_path     = surface_path,
+            all_coeffs      = all_coeffs,
+            slice_xcoords_D = surface_xcoords_D,
+            sampling_rate   = sampling_rate,
+            case_name       = args.case_name,
         )
 
 
