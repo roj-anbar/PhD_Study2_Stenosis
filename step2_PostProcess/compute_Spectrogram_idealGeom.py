@@ -1010,18 +1010,18 @@ def make_spectrogram_sweep_video(
 
         # ---- 2-panel figure: geometry silhouette (top) + spectrogram (bottom) ----
         #fig, ax_spec = plt.subplots(1, 1, figsize=(8, 6))
-        fig, (ax_geom, ax_spec) = plt.subplots(2, 1, figsize=(10, 8), gridspec_kw={'height_ratios': [1, 2.5], 'hspace': 0.4})
+        fig, (ax_geom, ax_spec) = plt.subplots(2, 1, figsize=(10, 8), gridspec_kw={'height_ratios': [1, 2.5], 'hspace': 0.2})
 
         # --- Top panel: pipe silhouette + moving slice band ---
         ax_geom.fill_between(sil_x_D, sil_y_upper_D, sil_y_lower_D, alpha=0.1, color='steelblue')
         ax_geom.plot(sil_x_D, sil_y_upper_D, color='steelblue', lw=1.5)
         ax_geom.plot(sil_x_D, sil_y_lower_D, color='steelblue', lw=1.5)
-        ax_geom.axvline(cx_D, color='crimson', lw=1.5) # show the slice
+        ax_geom.axvline(cx_D, color='magenta', lw=2) # show the slice
         #ax_geom.axvspan(x_lo_D, x_hi_D, alpha=0.45, color='crimson') # show the slice edges
         ax_geom.set_xlim([0, sil_x_total_D])
-        ax_geom.set_xlabel(f'Axial position ({axis_label} / D)', fontsize=12, fontweight='bold')
-        ax_geom.set_ylabel('r / D', fontsize=12, fontweight='bold')
-        ax_geom.set_title(f"Slice {axis_label} = {cx_D:.2f} D", fontsize=18, fontweight='bold')
+        ax_geom.set_xlabel(f'{axis_label} / D', fontsize=10, fontweight='bold')
+        ax_geom.set_ylabel('r / D', fontsize=10, fontweight='bold')
+        ax_geom.set_title(f"Slice ({axis_label}/D) = {cx_D:.2f}", fontsize=18, fontweight='bold')
         ax_geom.set_aspect('equal')
         ax_geom.tick_params(direction='in', labelsize=9)
 
@@ -1036,6 +1036,8 @@ def make_spectrogram_sweep_video(
         #ax_spec.set_title(f"Slice {axis_label} = {cx_D:.2f} D", fontsize=18, fontweight='bold')
         cbar = fig.colorbar(pcm, ax=ax_spec)
         cbar.set_label('SPL (dB)', rotation=270, labelpad=15, fontsize=13, fontweight='bold')
+        cbar.ax.tick_params(labelsize=10)
+
 
         plt.savefig(frames_dir / f"frame_{frame_count:04d}.png", dpi=100)
         plt.close(fig)

@@ -36,7 +36,7 @@ echo "Job started: $(date)"
 CASE=eccStenosis                                                                                # Case name
 BASE_DIR=$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais                # Parent directory of the case
 MESH_FOLDER="$BASE_DIR/step1_CFD/data"                                                          # Path to mesh data folder containing the h5 mesh
-INPUT_CFD="$BASE_DIR/step1_CFD/results/rampoffset2mLs/${CASE}_clean_ts12000_cy6_saveFreq1"          # Path to CFD results folder containing timeseries HDF5 files
+INPUT_CFD="$BASE_DIR/step1_CFD/results/rampoffset2mLs/${CASE}_noisy_ts12000_cy6_saveFreq1"          # Path to CFD results folder containing timeseries HDF5 files
 OUTPUT="$BASE_DIR/step2_PostProcess"                                                            # Path to saving spectrogram files
 SPECTROGRAM_REGIONS="$OUTPUT/configs/${CASE}_spectrogram_regions.csv"                           # Path to spectrogram regions csv file used to generate regional specs
 
