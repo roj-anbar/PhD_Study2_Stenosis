@@ -217,7 +217,7 @@ def sample_circumferential_nodes(surf_mesh:     pv.PolyData,
     node_coords       = surf_mesh.points[node_indices]
     target_angles_deg = np.degrees(target_angles)
 
-    print(f"[slice] slice_xcoord={slice_xcoord}  |  radius={radius:.5f}  |  unique nodes={n_unique}/{n_points}")
+    print(f"[step1] slice_xcoord={slice_xcoord:.2f}  |  radius={radius:.2f}  |  unique nodes={n_unique}/{n_points}")
 
     return node_indices, target_angles_deg, target_coords, node_coords
 
@@ -389,7 +389,7 @@ def compute_spatial_fourier_coefficients(pressure: np.ndarray) -> tuple[np.ndarr
     n_nodes      = pressure.shape[0]
     coeffs       = np.fft.rfft(pressure, axis=0) / n_nodes   # (n_modes, n_snapshots), complex, [Pa]
     mode_numbers = np.arange(coeffs.shape[0], dtype=int)
-    print(f"[step3] Spatial FFT: {n_nodes} nodes → {coeffs.shape[0]} modes  |  shape {coeffs.shape}")
+    print(f"[step3] Spatial FFT: {n_nodes} nodes → {coeffs.shape[0]} modes")
     return coeffs, mode_numbers
 
 
@@ -450,30 +450,29 @@ def plot_mode_surface_3d(
 
     Axes
     ----
-    X : inlet flowrate [mL/s]
-    Y : x/D
+    X : x/D
+    Y : inlet flowrate [mL/s]
     Z : mode amplitude [Pa]
     """
-    if modes_to_plot is None:
-        modes_to_plot = [1, 2, 3]
+    if modes_to_plot is None: modes_to_plot = [1, 2, 3]
 
     n_snapshots = all_coeffs[0].shape[1]
     flowrate    = np.arange(n_snapshots) / sampling_rate * 2 + 2   # [mL/s]
 
-    X, Y = np.meshgrid(flowrate, slice_xcoords_D)                   # (n_slices, n_snapshots)
+    X, Y = np.meshgrid(slice_xcoords_D, flowrate)                   # (n_snapshots, n_slices)
 
     for m in modes_to_plot:
-        Z = np.vstack([np.abs(c[m]) for c in all_coeffs])           # (n_slices, n_snapshots) [Pa]
+        Z = np.vstack([np.abs(c[m]) for c in all_coeffs]).T         # (n_snapshots, n_slices) [Pa]
 
         fig  = plt.figure(figsize=(9, 6))
         ax   = fig.add_subplot(111, projection='3d')
-        surf = ax.plot_surface(X, Y, Z, cmap='viridis', alpha=0.88,
-                               linewidth=0, antialiased=True)
+        surf = ax.plot_surface(X, Y, Z, cmap='jet', alpha=0.75, linewidth=0.5, antialiased=True, vmin=0, vmax=15)
         fig.colorbar(surf, ax=ax, shrink=0.5, pad=0.1, label='Amplitude [Pa]')
 
-        ax.set_xlabel('Inlet Flowrate [mL/s]', fontsize=10, labelpad=10)
-        ax.set_ylabel('x/D',                   fontsize=10, labelpad=10)
-        ax.set_zlabel('Amplitude [Pa]',         fontsize=10, labelpad=10)
+        ax.set_xlabel('x/D',                   fontsize=10, labelpad=10)
+        ax.set_ylabel('Inlet Flowrate [mL/s]', fontsize=10, labelpad=10)
+        ax.set_zlabel('Amplitude [Pa]',        fontsize=10, labelpad=10)
+        ax.set_zlim(0, 30)
         ax.set_title(f'{case_name}  —  mode m = {m}', fontsize=12, fontweight='bold')
         ax.tick_params(labelsize=8)
 
@@ -623,35 +622,22 @@ def main():
     if args.plot_surface_3d:
         ax_min = surf_mesh.bounds[args.pipe_axis * 2]
         ax_max = surf_mesh.bounds[args.pipe_axis * 2 + 1]
-        surface_xcoords_D = np.linspace(ax_min / pipe_diameter,
-                                        ax_max / pipe_diameter,
-                                        args.n_surface_slices)
-        print(f"\n[surface3d] {args.n_surface_slices} slices: "
-              f"x/D in [{surface_xcoords_D[0]:.2f}, {surface_xcoords_D[-1]:.2f}]")
+        #surface_xcoords_D = np.linspace(ax_min / pipe_diameter, ax_max / pipe_diameter, args.n_surface_slices)
+        surface_xcoords_D = np.linspace(-1, 10, 50)
+        print(f"\n[surface3d] {args.n_surface_slices} slices: x/D in [{surface_xcoords_D[0]:.2f}, {surface_xcoords_D[-1]:.2f}]")
 
         raw_vol_ids  = surf_mesh.point_data.get('vtkOriginalPtIds', None)
         all_coeffs   = []
         for i, xD in enumerate(surface_xcoords_D):
             xcoord = xD * pipe_diameter
-            node_indices, _, _, _ = sample_circumferential_nodes(
-                surf_mesh     = surf_mesh,
-                slice_xcoord  = xcoord,
-                n_points      = args.n_wallNodes,
-                pipe_diameter = pipe_diameter,
-                pipe_axis     = args.pipe_axis,
-            )
+            node_indices, _, _, _ = sample_circumferential_nodes(surf_mesh = surf_mesh, slice_xcoord  = xcoord, n_points = args.n_wallNodes, pipe_diameter = pipe_diameter,pipe_axis = args.pipe_axis)
             vol_point_ids = raw_vol_ids[node_indices]
-            pressure, _   = read_pressure_at_sample_nodes(
-                input_folder  = Path(args.input_folder),
-                vol_point_ids = vol_point_ids,
-                density       = args.density,
-                n_process     = args.n_process,
-            )
-            coeffs, _ = compute_spatial_fourier_coefficients(pressure)
+            pressure, _   = read_pressure_at_sample_nodes(input_folder = Path(args.input_folder), vol_point_ids = vol_point_ids, density = args.density, n_process = args.n_process)
+            coeffs, _     = compute_spatial_fourier_coefficients(pressure)
             all_coeffs.append(coeffs)
             print(f"[surface3d] {i + 1}/{args.n_surface_slices} done")
 
-        surface_path = output_folder / f"{args.case_name}_n{args.n_wallNodes}_modes"
+        surface_path = output_folder / f"{args.case_name}_n{args.n_wallNodes}"
         plot_mode_surface_3d(
             output_path     = surface_path,
             all_coeffs      = all_coeffs,

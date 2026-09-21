@@ -809,8 +809,7 @@ def main():
     # ------------------------------------------------------------------
     # 6. Read u and p at centerline nodes (parallel)
     # ------------------------------------------------------------------
-    u_cl, p_cl = read_centerline_fields_parallel(
-        CFD_h5_files, node_ids, args.n_process, args.density)
+    u_cl, p_cl = read_centerline_fields_parallel(CFD_h5_files, node_ids, args.n_process, args.density)
 
     # ------------------------------------------------------------------
     # 7. Build Re axis
@@ -881,7 +880,7 @@ def main():
         imgs_dir / f"{args.case_name}_NSterms_2Dmap.png",
         args.case_name)
 
-    plot_2d_individual(ns_plot, x_D, Re_plot, imgs_dir, args.case_name)
+    #plot_2d_individual(ns_plot, x_D, Re_plot, imgs_dir, args.case_name)
 
     print(f"\n[done] All outputs written to: {output_root}")
 

@@ -88,11 +88,12 @@ echo "Job finished: $(date)"
 #---------------------- For running directly from the command line ------------------------------------------------------
 # Load modules first, then run:
 #
-python compute_modes_wallpressure.py \
+python compute_SpatialModes_wallpressure.py \
     --case_name         "eccStenosis" \
     --mesh_folder       "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/data" \
-    --input_folder      "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/results/rampoffset2mLs/eccStenosis_noisy_ts12000_cy6_saveFreq1" \
+    --input_folder      "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step1_CFD/results/rampoffset2mLs/eccStenosis_clean_ts12000_cy6_saveFreq1" \
     --output_folder     "$SCRATCH/My_Projects/Study2_stenosis/cases/case0_eccStenosis/modelOwais/step2_PostProcess/ModalAnalysis_wallpressure" \
-    --slice_xcoord_D    -2 0 3 10 18  \
-    --n_wallNodes       16
+    --slice_xcoord_D    1 5 \
+    --n_wallNodes       16 \
+    --plot_surface_3d
 #    --pipe_axis         0
