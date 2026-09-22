@@ -390,9 +390,9 @@ def problem_parameters(commandline_kwargs, NS_parameters, **NS_namespace):
 
             # Boundary conditions params
             inlet_BC_type             = get_cmdarg(commandline_kwargs, 'inlet_BC_type', 'pulsatile'),       # choose from 'ramp', 'pulsatile', 'constant', 'custom'
-            Qin_constant_mLs          = get_cmdarg(commandline_kwargs, 'inflowrate_constant_mLs', 5),       # constant inflow rate, used when inlet_BC_type='constant' [mL/s]
-            ramp_slope                = get_cmdarg(commandline_kwargs, 'ramp_slope',  2),                   # slope of inflow ramp, used when inlet_BC_type='ramp'
-            ramp_offset               = get_cmdarg(commandline_kwargs, 'ramp_offset', 2),                   # offset of inflow ramp, used when inlet_BC_type='ramp'
+            Qin_constant_mLs          = get_cmdarg(commandline_kwargs, 'inflowrate_constant_mLs', 5.0),       # constant inflow rate, used when inlet_BC_type='constant' [mL/s]
+            ramp_slope                = get_cmdarg(commandline_kwargs, 'ramp_slope',  2.0),                   # slope of inflow ramp, used when inlet_BC_type='ramp'
+            ramp_offset               = get_cmdarg(commandline_kwargs, 'ramp_offset', 2.0),                   # offset of inflow ramp, used when inlet_BC_type='ramp'
             noise_y                   = noise_y,                                                            # add Gaussian noise to the y-component of the inlet velocity
             noise_z                   = noise_z,                                                            # add Gaussian noise to the z-component of the inlet velocity
             noise_sigma               = noise_sigma,                                                        # std dev of Gaussian noise (default = 0.001 m/s)
