@@ -28,7 +28,7 @@
 #   - uOrder               : FE polynomial degree for velocity (default: 1)
 #   - save_frequency       : save output every N steps
 #   - checkpoint           : write restart checkpoint every N steps
-#   - inlet_BC_type        : type of the inlet boundary condition --> choose from: {'pulsatile', 'ramp', 'constant', 'custom'} (default is 'pulsatile')
+#   - inlet_BC_type        : type of the inlet boundary condition --> choose from: {'pulsatile', 'ramp', 'constant'} (default is 'pulsatile')
 #
 # OPTIONAL:
 #   - restart_folder           : path to a previous results folder to restart from
@@ -311,8 +311,8 @@ def problem_parameters(commandline_kwargs, NS_parameters, **NS_namespace):
         print('<!> Unable to run without a mesh file.')
 
     # Obtain mesh information
-    inlet_ids, Q_means, inlet_area, waveform_tags    = read_mesh_info(mesh_info_path, '<INLETS>')
-    outlet_ids, area_ratio, outlet_area, _ = read_mesh_info(mesh_info_path, '<OUTLETS>')
+    inlet_ids, Q_means, inlet_area, waveform_tags  = read_mesh_info(mesh_info_path, '<INLETS>')
+    outlet_ids, area_ratio, outlet_area, _         = read_mesh_info(mesh_info_path, '<OUTLETS>')
 
 
     restart_folder = get_cmdarg(commandline_kwargs, 'restart_folder')
@@ -651,7 +651,6 @@ def create_bcs(u_, p_, p_1, t, NS_expressions, V, Q, area_ratio, mesh, subdomain
 
 
     # 1. Inlet BCs
-    # Womersley boundary condition at inlet
     inlet_ids_count = len(inlet_ids)
     if mpi_rank == 0:
         if NS_parameters['noise_y'] or NS_parameters['noise_z']:
@@ -659,7 +658,8 @@ def create_bcs(u_, p_, p_1, t, NS_expressions, V, Q, area_ratio, mesh, subdomain
         else:
             print(f'Inlet BC type is {NS_parameters["inlet_BC_type"]} and CLEAN (no Gaussian noise)\n')
 
-        print('Inlet', 'BCs' if inlet_ids_count > 1 else 'BC', 'on boundaries:' if inlet_ids_count > 1 else 'on boundary', inlet_ids)
+        print ('Inlet BC type is:', NS_parameters['inlet_BC_type'])
+        #print('Inlet', 'BCs' if inlet_ids_count > 1 else 'BC', 'on boundaries:' if inlet_ids_count > 1 else 'on boundary', inlet_ids)
         firststr = '    %8s    %-12s    %10s    %15s    %6s'%('inlet_id','wave_form','period(ms)','flowrate(mL/s)','cells')
         secondstr = 'Inlets & Outlets Information\n'+'  id   %-45s  %-45s   %-12s   %-12s'%('center','normal','radius','area')
 
@@ -681,8 +681,7 @@ def create_bcs(u_, p_, p_1, t, NS_expressions, V, Q, area_ratio, mesh, subdomain
 
         # Option1: Pulsatile Womersley
         if NS_parameters['inlet_BC_type'] == 'pulsatile': #if waveform_filename[0:3] == 'FC_':
-            if mpi_rank == 0:
-                print ('- loading inflow wave form:', waveform_filename)
+            if mpi_rank == 0: print ('- loading inflow wave form:', waveform_filename)
             inlet_i = Womersley.make_womersley_bcs_2(NS_namespace["period"], Q_means[i], waveform_filename, mesh, nu, tmp_a, tmp_c, tmp_r, tmp_n, velocity_degree, flat_profile_at_intlet_bc)
 
         # Option2: Ramp inflow (linearly increasing)
@@ -692,16 +691,14 @@ def create_bcs(u_, p_, p_1, t, NS_expressions, V, Q, area_ratio, mesh, subdomain
             #inlet_i = poiseuille_inlet_velocity(mesh, ds_inlet, Q_inflow)
             inlet_i = poiseuille_inlet_velocity_xaxis(mesh, ds_inlet, Q_inflow)
 
-        # Option3: Constant
+        # Option3: Constant flowrate (steady)
         elif NS_parameters['inlet_BC_type'] == 'constant':
             Q_inflow = constant_inflowrate(t, NS_parameters['Qin_constant_mLs'])
             inlet_i = poiseuille_inlet_velocity_xaxis(mesh, ds_inlet, Q_inflow)
 
-        # Option4: Custom
-        else: #THIS DOES NOT CURRENTLY WORK #NS_parameters['inlet_BC_type'] == 'custom'
-            if mpi_rank == 0: print ('- loading custom inflowrate function:', waveform_filename)
-            inlet_i = CustomFunction.make_custom_function_bcs(NS_namespace["period"], Q_means[i], waveform_filename, mesh, nu, tmp_a, tmp_c, tmp_r, tmp_n, velocity_degree, flat_profile_at_intlet_bc)
-            
+        else:
+            if mpi_rank == 0: print (f'<inlet_BC_type> not recognized. Choose from: [pulsatile, ramp, constant].')
+       
         inlets.append(inlet_i)
         bci = [DirichletBC(V, ilt, boundary_markers, inlet_ids[i]) for ilt in inlet_i]
         for j in range(3): bc_inlet_u[j].append(bci[j])
