@@ -326,15 +326,18 @@ def problem_parameters(commandline_kwargs, NS_parameters, **NS_namespace):
         case_fullname = NS_parameters['case_fullname']
 
     else:
-
         case_name       = get_cmdarg(commandline_kwargs, 'mesh_name')
         period          = get_cmdarg(commandline_kwargs, 'period', 915.0)   # [ms]
         timesteps       = get_cmdarg(commandline_kwargs, 'timesteps', 2000)
         no_of_cycles    = get_cmdarg(commandline_kwargs, 'cycles', 2)
         save_freq       = get_cmdarg(commandline_kwargs, 'save_frequency', 5)
-            
-        if mpi_rank == 0: print('Found out period [ms] = %s '%str(period))
 
+        noise_y     = get_cmdarg(commandline_kwargs, 'noise_y', False)   # add Gaussian noise to the y-component of the inlet velocity
+        noise_z     = get_cmdarg(commandline_kwargs, 'noise_z', False)   # add Gaussian noise to the z-component of the inlet velocity
+        noise_sigma = get_cmdarg(commandline_kwargs, 'noise_sigma', 0.001)  # std dev of Gaussian noise
+        noise_tag   = "_noisy" if (noise_y or noise_z) else "_clean"
+
+        if mpi_rank == 0: print('Found out period [ms] = %s '%str(period))
 
         # Build a descriptive case_fullname
         #txt = ''
@@ -343,10 +346,6 @@ def problem_parameters(commandline_kwargs, NS_parameters, **NS_namespace):
         #txt += '_Per%d'%int(period)
 
         #case_fullname = ("art_" + mesh_name + txt + "_Newt370" + "_ts" + str(timesteps) + "_cy" + str(cycles) + "_uO" + str(uOrder))
-        noise_y     = get_cmdarg(commandline_kwargs, 'noise_y', False)   # add Gaussian noise to the y-component of the inlet velocity
-        noise_z     = get_cmdarg(commandline_kwargs, 'noise_z', False)   # add Gaussian noise to the z-component of the inlet velocity
-        noise_sigma = get_cmdarg(commandline_kwargs, 'noise_sigma', 0.001)  # std dev of Gaussian noise
-        noise_tag   = "_noisy" if (noise_y or noise_z) else "_clean"
         case_fullname = (mesh_name + noise_tag + "_ts" + str(timesteps) + "_cy" + str(no_of_cycles))
         results_folder = f"./results/{case_fullname}_saveFreq{save_freq}"
 
@@ -441,15 +440,15 @@ def mesh(mesh_path, **NS_namespace):
     m.mpi_comm = mpi_comm
 
     # Mesh statistics
-    num_points    = Function(FunctionSpace(m, "CG", 1)).vector().size()
-    mesh_volume   = MPI.sum(MPI.comm_world, assemble(Constant(1)*dx(m)))
+    num_points         = Function(FunctionSpace(m, "CG", 1)).vector().size()
+    mesh_volume        = MPI.sum(MPI.comm_world, assemble(Constant(1)*dx(m)))
     cell_diameter      = [Cell(m,i).circumradius() for i in range (m.num_cells())]
     avg_cell_diameter  = sum(cell_diameter) / len(cell_diameter)
-    num_cells     = int( MPI.sum(MPI.comm_world, m.num_cells()) )
-    #num_points   = int( MPI.sum(MPI.comm_world, m.num_vertices()) ) // shared points?
-    hmin          = MPI.min(MPI.comm_world, m.hmin()) #[mm]
-    hmax          = MPI.max(MPI.comm_world, m.hmax()) #[mm]
-    num_facets    = int( MPI.sum(MPI.comm_world, m.num_facets()) )
+    num_cells          = int( MPI.sum(MPI.comm_world, m.num_cells()) )
+    #num_points        = int( MPI.sum(MPI.comm_world, m.num_vertices()) ) // shared points?
+    hmin               = MPI.min(MPI.comm_world, m.hmin()) #[mm]
+    hmax               = MPI.max(MPI.comm_world, m.hmax()) #[mm]
+    num_facets         = int( MPI.sum(MPI.comm_world, m.num_facets()) )
     
     # pss = mesh_path.rfind('/')
     # pss = 0 if pss < 0 else pss+1
@@ -745,7 +744,8 @@ def create_bcs(u_, p_, p_1, t, NS_expressions, V, Q, area_ratio, mesh, subdomain
     outlet_ids_count = len(outlet_ids)
     bc_p = []
     if mpi_rank == 0:
-        print('Outlet', 'BCs' if outlet_ids_count > 1 else 'BC', 'on boundaries:' if outlet_ids_count > 1 else 'on boundary', outlet_ids)
+        print(f'Outlet BCs on boundaries: {outlet_ids}')
+        #print('Outlet', 'BCs' if outlet_ids_count > 1 else 'BC', 'on boundaries:' if outlet_ids_count > 1 else 'on boundary', outlet_ids)
         print("    outlet_id    mass_flow_ratio      cells")
     for i, ind in enumerate(outlet_ids):
         tmp_a, tmp_c, tmp_r, tmp_n = Womersley.compute_boundary_geometry_acrn(mesh, dS[outlet_ids[i]], normals)
@@ -819,17 +819,19 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
             for uc in inlet: uc.set_t(t)
 
     elif NS_parameters['inlet_BC_type'] == 'ramp':
+        Q_inflow_now = ramp_inflowrate(t, NS_parameters['ramp_slope'], NS_parameters['ramp_offset'])
         # Adding noise to the lateral velocity components (y and z)
         eps_y, eps_z = gaussian_inlet_noise(tstep, sigma=NS_parameters['noise_sigma'], noise_y=NS_parameters['noise_y'], noise_z=NS_parameters['noise_z'])
         for inlet in NS_expressions["inlet"]:
             #inlet[0].t = t
-            inlet[0].Q_inflow = ramp_inflowrate(t, NS_parameters['ramp_slope'], NS_parameters['ramp_offset'])
+            inlet[0].Q_inflow = Q_inflow_now
             inlet[1].assign(eps_y)
             inlet[2].assign(eps_z)
 
     elif NS_parameters['inlet_BC_type'] == 'constant':
+        Q_inflow_now = constant_inflowrate(t, NS_parameters['Qin_constant_mLs'])
         for inlet in NS_expressions["inlet"]:
-            inlet[0].Q_inflow = constant_inflowrate(t, NS_parameters['Qin_constant_mLs'])
+            inlet[0].Q_inflow = Q_inflow_now
 
     timestep_cpu_time = time.time() - current_time
     current_time = time.time()
@@ -890,7 +892,6 @@ def temporal_hook(u_, p_, p, q_, V, mesh, tstep, compute_flux,
                     'Out', out_id, flux_out[out_id], area_ratio[i] * Q_ins_sum,
                     flux_out[out_id] / inout_area[out_id], pressure_out[out_id], NS_expressions[out_id].p))
             print("~" * 88)
-
 
         sys.stdout.flush()
 
