@@ -582,9 +582,10 @@ def constant_inflowrate(t, Q=5.0, ramp_duration=50.0):
     Q [mL/s]          : desired constant flowrate, set via the 'inflowrate_constant_mLs' commandline parameter (default 5.0)
     ramp_duration[ms] : duration of the ramp-up,(default 50.0)
     """
+    Q_start = 0.01
     if t >= ramp_duration:
         return Q
-    return Q * (t / ramp_duration)
+    return Q_start + (Q - Q_start) * (t / ramp_duration)
 
 
 def poiseuille_inlet_velocity_xaxis(mesh, ds_inlet, Q_inflow, **NS_namespace):

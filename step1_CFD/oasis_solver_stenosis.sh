@@ -151,7 +151,7 @@ apptainer exec \
   uOrder=$uOrder \
   inlet_BC_type=$inlet_BC_type \
   ramp_slope=${ramp_slope:-2} \
-  ramp_offset=${ramp_offset:-1} \     
+  ramp_offset=${ramp_offset:-1} \
   inflowrate_constant_mLs=${inflowrate_constant_mLs:-5} \
   noise_y=${noise_y:-False} \
   noise_z=${noise_z:-False} \
